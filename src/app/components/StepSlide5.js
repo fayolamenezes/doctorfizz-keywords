@@ -3,18 +3,22 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { ArrowRight, ArrowLeft, Plus, X, Check } from "lucide-react";
 
-export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
-  /* ---------------- State ---------------- */
+export default function StepSlide5({
+  onNext,
+  onBack,
+  onCompetitorSubmit,
+  businessData,
+  languageLocationData,
+  selectedKeywords,
+}) {
   const [selectedBusinessCompetitors, setSelectedBusinessCompetitors] = useState([]);
   const [selectedSearchCompetitors, setSelectedSearchCompetitors] = useState([]);
 
-  // Start EMPTY to avoid flicker; show skeletons while loading
   const [businessSuggestions, setBusinessSuggestions] = useState([]);
   const [searchSuggestions, setSearchSuggestions] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
 
-  // Inline “More → input”
   const [addingBusiness, setAddingBusiness] = useState(false);
   const [addingSearch, setAddingSearch] = useState(false);
   const [bizInput, setBizInput] = useState("");
@@ -22,16 +26,14 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
 
   const [showSummary, setShowSummary] = useState(false);
 
-  // Fixed-height shell (match other steps)
   const panelRef = useRef(null);
   const scrollRef = useRef(null);
   const bottomBarRef = useRef(null);
-  const tailRef = useRef(null); // <-- anchor for auto-scroll-to-bottom
+  const tailRef = useRef(null);
   const [panelHeight, setPanelHeight] = useState(null);
 
   const lastSubmittedData = useRef(null);
 
-  /* ---------------- Utilities ---------------- */
   const normalizeHost = useCallback((input) => {
     if (!input || typeof input !== "string") return null;
     let s = input.trim().toLowerCase();
@@ -43,6 +45,16 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
       s = s.replace(/^https?:\/\//, "").split("/")[0];
     }
     return s.replace(/^www\./, "");
+  }, []);
+
+  const getStoredJson = useCallback((key) => {
+    try {
+      const raw = localStorage.getItem(key) ?? sessionStorage.getItem(key);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
   }, []);
 
   const getStoredSite = useCallback(() => {
@@ -76,20 +88,97 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
     return "example.com";
   }, [normalizeHost, getStoredSite]);
 
-  /* ---------------- Load suggestions for the chosen site (API) ---------------- */
+  const buildLocationString = useCallback((ll) => {
+    const city = (ll?.city || "").trim();
+    const state = (ll?.state || "").trim();
+    const country = (ll?.country || "").trim();
+    return [city, state, country].filter(Boolean).join(", ");
+  }, []);
+
+  const getContext = useCallback(() => {
+    const b = businessData || getStoredJson("businessData") || {};
+    const ll = languageLocationData || getStoredJson("languageLocationData") || {};
+    const seedFromProps = Array.isArray(selectedKeywords) ? selectedKeywords : null;
+    const seedFromStorage = getStoredJson("selectedKeywords");
+    const seeds = (seedFromProps || seedFromStorage || []).filter(Boolean);
+
+    return {
+      industry: (b?.industry || "").trim(),
+      offering: (b?.offering || "").trim(),
+      category: (b?.category || "").trim(),
+      language: (ll?.language || "").trim(),
+      location: buildLocationString(ll),
+      country: (ll?.country || "").trim(),
+      state: (ll?.state || "").trim(),
+      city: (ll?.city || "").trim(),
+      seedKeywords: seeds.slice(0, 12),
+    };
+  }, [businessData, languageLocationData, selectedKeywords, getStoredJson, buildLocationString]);
+
+  const makeKey = useCallback((domain, industry, location) => {
+    return [domain || "", industry || "", location || ""].map((x) => String(x || "").trim().toLowerCase()).join("|");
+  }, []);
+
+  const readBootstrap = useCallback(() => {
+    try {
+      const raw = localStorage.getItem("drfizz.bootstrap");
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
 
     async function load() {
       setIsLoading(true);
       setLoadError(null);
+
       try {
         const target = getTargetSite();
+        const ctx = getContext();
 
+        // 1) try bootstrap cache
+        const cached = readBootstrap();
+        const expectedKey = makeKey(target, ctx.industry, ctx.location);
+        const storedKey = localStorage.getItem("drfizz.bootstrap.key") || "";
+
+        if (cached && storedKey === expectedKey && cached?.competitors) {
+          const biz = Array.isArray(cached.competitors.businessCompetitors) ? cached.competitors.businessCompetitors : [];
+          const ser = Array.isArray(cached.competitors.searchCompetitors) ? cached.competitors.searchCompetitors : [];
+
+          const bizSet = new Set(biz.map((x) => String(x).toLowerCase().trim()));
+          const serFiltered = ser.filter((x) => !bizSet.has(String(x).toLowerCase().trim()));
+
+          const bizFinal = biz.slice(0, 4);
+          const serFinal = serFiltered.slice(0, 4);
+
+          if (isMounted) {
+            setBusinessSuggestions(bizFinal.concat("More"));
+            setSearchSuggestions(serFinal.concat("More"));
+          }
+
+          return;
+        }
+
+        // 2) fallback API
         const res = await fetch("/api/competitors/suggest", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ domain: target }),
+          body: JSON.stringify({
+            domain: target,
+            industry: ctx.industry,
+            offering: ctx.offering,
+            category: ctx.category,
+            language: ctx.language,
+            location: ctx.location,
+            country: ctx.country,
+            state: ctx.state,
+            city: ctx.city,
+            seedKeywords: ctx.seedKeywords,
+          }),
         });
 
         if (!res.ok) throw new Error(`Failed to load competitors (${res.status})`);
@@ -98,9 +187,11 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
         const biz = Array.isArray(data.businessCompetitors) ? data.businessCompetitors : [];
         const ser = Array.isArray(data.searchCompetitors) ? data.searchCompetitors : [];
 
-        // only real competitors, max 4 each
+        const bizSet = new Set(biz.map((x) => String(x).toLowerCase().trim()));
+        const serFiltered = ser.filter((x) => !bizSet.has(String(x).toLowerCase().trim()));
+
         const bizFinal = biz.slice(0, 4);
-        const serFinal = ser.slice(0, 4);
+        const serFinal = serFiltered.slice(0, 4);
 
         if (isMounted) {
           setBusinessSuggestions(bizFinal.concat("More"));
@@ -109,7 +200,6 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
       } catch (err) {
         if (isMounted) {
           setLoadError(err?.message || "Failed to load competitor data");
-          // no fake competitors; just allow user to add their own
           setBusinessSuggestions(["More"]);
           setSearchSuggestions(["More"]);
         }
@@ -119,12 +209,9 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
     }
 
     load();
-    return () => {
-      isMounted = false;
-    };
-  }, [getTargetSite]);
+    return () => { isMounted = false; };
+  }, [getTargetSite, getContext, readBootstrap, makeKey]);
 
-  /* ---------------- Fixed panel height ---------------- */
   const recomputePanelHeight = () => {
     if (!panelRef.current) return;
     const vpH = window.innerHeight;
@@ -148,15 +235,8 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
 
   useEffect(() => {
     recomputePanelHeight();
-  }, [
-    showSummary,
-    selectedBusinessCompetitors.length,
-    selectedSearchCompetitors.length,
-    addingBusiness,
-    addingSearch,
-  ]);
+  }, [showSummary, selectedBusinessCompetitors.length, selectedSearchCompetitors.length, addingBusiness, addingSearch]);
 
-  /* ---------------- Handlers ---------------- */
   const toggleBusiness = (label) => {
     if (label === "More" && isLoading) return;
     if (label === "More") {
@@ -199,19 +279,16 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
     setTimeout(() => document.getElementById("search-more-input")?.focus(), 50);
   };
 
-  /* ---------------- Submit + Summary toggle ---------------- */
   useEffect(() => {
-    const totalSelected =
-      selectedBusinessCompetitors.length + selectedSearchCompetitors.length;
+    const bizSet = new Set(selectedBusinessCompetitors.map((x) => String(x).toLowerCase().trim()));
+    const searchClean = selectedSearchCompetitors.filter((x) => !bizSet.has(String(x).toLowerCase().trim()));
+    const totalSelected = selectedBusinessCompetitors.length + searchClean.length;
 
     if (totalSelected > 0) {
       const payload = {
         businessCompetitors: selectedBusinessCompetitors,
-        searchCompetitors: selectedSearchCompetitors,
-        totalCompetitors: [
-          ...selectedBusinessCompetitors,
-          ...selectedSearchCompetitors,
-        ],
+        searchCompetitors: searchClean,
+        totalCompetitors: [...selectedBusinessCompetitors, ...searchClean],
       };
       const curr = JSON.stringify(payload);
       if (curr !== JSON.stringify(lastSubmittedData.current)) {
@@ -221,31 +298,18 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
       setShowSummary(true);
     } else {
       setShowSummary(false);
-      onCompetitorSubmit?.({
-        businessCompetitors: [],
-        searchCompetitors: [],
-        totalCompetitors: [],
-      });
+      onCompetitorSubmit?.({ businessCompetitors: [], searchCompetitors: [], totalCompetitors: [] });
     }
   }, [selectedBusinessCompetitors, selectedSearchCompetitors, onCompetitorSubmit]);
 
-  /* ---------------- Auto-scroll to bottom ---------------- */
   useEffect(() => {
     if (tailRef.current) {
       requestAnimationFrame(() => {
         tailRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       });
     }
-  }, [
-    showSummary,
-    selectedBusinessCompetitors.length,
-    selectedSearchCompetitors.length,
-    addingBusiness,
-    addingSearch,
-    isLoading,
-  ]);
+  }, [showSummary, selectedBusinessCompetitors.length, selectedSearchCompetitors.length, addingBusiness, addingSearch, isLoading]);
 
-  /* ---------------- Reusable chip renderer ---------------- */
   const Chip = ({ label, isSelected, onClick, disabled }) => (
     <button
       onClick={onClick}
@@ -256,25 +320,15 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
         isSelected ? "active" : ""
       } ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
     >
-      <span className="truncate max-w-[150px] sm:max-w-[180px] md:max-w-none">
-        {label}
-      </span>
+      <span className="truncate max-w-[150px] sm:max-w-[180px] md:max-w-none">{label}</span>
 
       {label !== "More" && (
         <>
           {!isSelected && <Plus size={16} className="ml-1 flex-shrink-0" />}
           {isSelected && (
             <span className="relative ml-1 inline-flex w-4 h-4 items-center justify-center flex-shrink-0">
-              <Check
-                size={16}
-                className="absolute opacity-100 group-hover:opacity-0 transition-opacity duration-150"
-                style={{ color: "#d45427" }}
-              />
-              <X
-                size={16}
-                className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                style={{ color: "#d45427" }}
-              />
+              <Check size={16} className="absolute opacity-100 group-hover:opacity-0 transition-opacity duration-150" style={{ color: "#d45427" }} />
+              <X size={16} className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150" style={{ color: "#d45427" }} />
             </span>
           )}
         </>
@@ -282,7 +336,6 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
     </button>
   );
 
-  /* ---------------- UI ---------------- */
   return (
     <div className="w-full h-full flex flex-col bg-transparent overflow-x-hidden">
       <div className="px-3 sm:px-4 md:px-6 pt-4 sm:pt-5 md:pt-6">
@@ -302,27 +355,17 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
               background: var(--border);
               animation: pulse 1.2s ease-in-out infinite;
             }
-            @media (max-width: 640px) {
-              .chip-skel {
-                height: 32px;
-                width: 72px;
-              }
-            }
-            @keyframes pulse {
-              0%, 100% { opacity: 0.6; }
-              50% { opacity: 1; }
-            }
+            @media (max-width: 640px) { .chip-skel { height: 32px; width: 72px; } }
+            @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
           `}</style>
 
           <div ref={scrollRef} className="inner-scroll h-full w-full overflow-y-auto">
             <div className="flex flex-col items-start text-start gap-5 sm:gap-6 md:gap-8 max-w-[820px] mx-auto">
-              {/* Step label */}
               <div className="text-[11px] sm:text-[12px] md:text-[13px] text-[var(--muted)] font-medium">
                 Step - 5
               </div>
               <div className="spacer-line w-[80%] self-start h-[1px] bg-[#d45427] mt-[-1%]" />
 
-              {/* Heading */}
               <div className="space-y-2.5 sm:space-y-3 max-w-[640px]">
                 <h1 className="text-[16px] sm:text-[18px] md:text-[22px] lg:text-[26px] font-bold text-[var(--text)]">
                   Pick your competitors to compare.
@@ -336,7 +379,7 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
                 </p>
               </div>
 
-              {/* BUSINESS SECTION */}
+              {/* BUSINESS */}
               <div className="w-full max-w-[880px] text-left space-y-3 sm:space-y-4">
                 <h3 className="text-[13px] sm:text-[14px] md:text-[15px] font-medium text-[var(--text)]">
                   Business Competitors
@@ -344,18 +387,13 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
 
                 <div className="flex flex-wrap justify-start gap-2 sm:gap-2.5 md:gap-3 items-center -mx-1">
                   {isLoading && businessSuggestions.length === 0
-                    ? Array.from({ length: 4 }).map((_, i) => (
-                        <span key={`biz-skel-${i}`} className="chip-skel mx-1" />
-                      ))
+                    ? Array.from({ length: 4 }).map((_, i) => <span key={`biz-skel-${i}`} className="chip-skel mx-1" />)
                     : businessSuggestions.map((label) => {
                         const isSelected = selectedBusinessCompetitors.includes(label);
 
                         if (label === "More" && addingBusiness) {
                           return (
-                            <div
-                              key="biz-inline-input"
-                              className="flex flex-wrap items-center gap-2 mx-1 w-full sm:w-auto"
-                            >
+                            <div key="biz-inline-input" className="flex flex-wrap items-center gap-2 mx-1 w-full sm:w-auto">
                               <input
                                 id="biz-more-input"
                                 value={bizInput}
@@ -394,7 +432,7 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
                 </div>
               </div>
 
-              {/* SEARCH SECTION */}
+              {/* SEARCH */}
               <div className="w-full max-w-[880px] text-left space-y-3 sm:space-y-4">
                 <h3 className="text-[13px] sm:text-[14px] md:text-[15px] font-medium text-[var(--text)]">
                   Search Engine Competitors
@@ -402,18 +440,13 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
 
                 <div className="flex flex-wrap justify-start gap-2 sm:gap-2.5 md:gap-3 items-center -mx-1">
                   {isLoading && searchSuggestions.length === 0
-                    ? Array.from({ length: 4 }).map((_, i) => (
-                        <span key={`ser-skel-${i}`} className="chip-skel mx-1" />
-                      ))
+                    ? Array.from({ length: 4 }).map((_, i) => <span key={`ser-skel-${i}`} className="chip-skel mx-1" />)
                     : searchSuggestions.map((label) => {
                         const isSelected = selectedSearchCompetitors.includes(label);
 
                         if (label === "More" && addingSearch) {
                           return (
-                            <div
-                              key="search-inline-input"
-                              className="flex flex-wrap items-center gap-2 mx-1 w-full sm:w-auto"
-                            >
+                            <div key="search-inline-input" className="flex flex-wrap items-center gap-2 mx-1 w-full sm:w-auto">
                               <input
                                 id="search-more-input"
                                 value={searchInput}
@@ -452,7 +485,6 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
                 </div>
               </div>
 
-              {/* Summary copy */}
               {showSummary && (
                 <div className="max-w-[640px] text-left self-start mt-5 sm:mt-6">
                   <h3 className="text-[15px] sm:text-[16px] md:text-[18px] font-bold text-[var(--text)] mb-2.5 sm:mb-3">
@@ -467,13 +499,12 @@ export default function StepSlide5({ onNext, onBack, onCompetitorSubmit }) {
               )}
 
               <div className="h-2" />
-              <div ref={tailRef} /> {/* <-- tail element to anchor auto-scroll */}
+              <div ref={tailRef} />
             </div>
           </div>
         </div>
       </div>
 
-      {/* Bottom bar */}
       <div ref={bottomBarRef} className="flex-shrink-0 bg-transparent">
         <div className="border-t border-[var(--border)]" />
         <div className="mx-auto w-full max-w-[1120px] px-3 sm:px-4 md:px-6">

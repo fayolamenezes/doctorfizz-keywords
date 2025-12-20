@@ -1,4 +1,4 @@
-// app/page.js (or wherever this file lives)
+// src/app/page.js
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -37,15 +37,10 @@ function MobileStepsThreeTwo({ currentStep }) {
     );
   };
 
-  // true circular dotted connector (mobile)
   const DottedConnector = ({ size = 3, count = 5, color = "bg-gray-300/90" }) => (
     <div className="flex items-center justify-center shrink-0 gap-1.5" aria-hidden>
       {Array.from({ length: count }).map((_, i) => (
-        <span
-          key={i}
-          className={`block rounded-full ${color}`}
-          style={{ width: size, height: size }}
-        />
+        <span key={i} className={`block rounded-full ${color}`} style={{ width: size, height: size }} />
       ))}
     </div>
   );
@@ -78,6 +73,14 @@ function MobileStepsThreeTwo({ currentStep }) {
   );
 }
 
+function clearBootstrapCache() {
+  try {
+    localStorage.removeItem("drfizz.bootstrap");
+    localStorage.removeItem("drfizz.bootstrap.key");
+    localStorage.removeItem("drfizz.bootstrap.ts");
+  } catch {}
+}
+
 export default function Home() {
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
@@ -89,26 +92,17 @@ export default function Home() {
   const [selectedKeywords, setSelectedKeywords] = useState([]);
   const [competitorData, setCompetitorData] = useState(null);
 
-  // holds payload for editor (null => open empty document)
   const [editorData, setEditorData] = useState(null);
-
-  // catalog from public/data/contenteditor.json
   const [catalog, setCatalog] = useState([]);
 
   const infoRef = useRef(null);
-
-  // scroll container ref for the main host panel
   const scrollContainerRef = useRef(null);
 
-  // on first load, if URL hash is #editor, land on Content Editor
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (window.location.hash === "#editor") {
-      setCurrentStep("contentEditor");
-    }
+    if (window.location.hash === "#editor") setCurrentStep("contentEditor");
   }, []);
 
-  // Load Content Editor catalog once
   useEffect(() => {
     fetch("/data/contenteditor.json")
       .then((r) => r.json())
@@ -116,7 +110,6 @@ export default function Home() {
       .catch(() => setCatalog([]));
   }, []);
 
-  // Sidebar click-outside
   useEffect(() => {
     function handleClickOutside(event) {
       if (
@@ -132,10 +125,8 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isPinned]);
 
-  // Listen for custom events to switch between Dashboard and Content Editor
   useEffect(() => {
     const toEditor = (e) => {
-      // e.detail may be { title, content, domain, kind } or null (for new doc)
       const p = e?.detail ?? null;
       if (!p) {
         setEditorData(null);
@@ -143,41 +134,19 @@ export default function Home() {
         return;
       }
 
-      // merge: catalog (contenteditor.json) for SEO config, payload (multi-content) for title+content
-      // When merging payload with SEO config from the catalog, prefer
-      // matching by the exact title first.  Domains often have
-      // multiple entries (one per blog/page) so matching on domain
-      // alone would always pick the first entry and override the
-      // payload with the wrong SEO data.  By checking the title
-      // first, we ensure we pick the correct page.  Only if the
-      // title is absent or unmatched do we fall back to domain.
       const match =
         catalog.find((x) => x.title === p.title) ||
         catalog.find((x) => x.domain === p.domain) ||
         null;
 
       const merged = match
-        ? {
-            ...match,
-            ...p,
-            // ensure title + content from payload win
-            title: p.title ?? match.title,
-            content: p.content ?? match.content,
-          }
+        ? { ...match, ...p, title: p.title ?? match.title, content: p.content ?? match.content }
         : p;
 
-      // Persist the selected domain to localStorage for the research panel.
-      // Without updating this key the optimize tab may load data from a previous
-      // domain and fallback to the first page【14921893551222†L259-L279】.
       if (merged && merged.domain) {
         try {
-          localStorage.setItem(
-            "websiteData",
-            JSON.stringify({ site: merged.domain })
-          );
-        } catch {
-          // ignore storage errors (e.g. private browsing)
-        }
+          localStorage.setItem("websiteData", JSON.stringify({ site: merged.domain }));
+        } catch {}
       }
 
       setEditorData(merged);
@@ -197,29 +166,23 @@ export default function Home() {
     };
   }, [catalog]);
 
-  // keep the URL hash in sync ONLY for Content Editor
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (currentStep === "contentEditor") {
-      if (window.location.hash !== "#editor") {
-        history.replaceState(null, "", "#editor");
-      }
+      if (window.location.hash !== "#editor") history.replaceState(null, "", "#editor");
     } else if (window.location.hash === "#editor") {
-      // when leaving editor, clear the hash
       history.replaceState(null, "", "#");
     }
   }, [currentStep]);
 
-  // always reset scroll position when step changes
   useEffect(() => {
     if (!scrollContainerRef.current) return;
     scrollContainerRef.current.scrollTop = 0;
   }, [currentStep]);
 
-  // listen for "wizard:navigate" from Step5Slide2 "Edit …" buttons
   useEffect(() => {
     const onWizardNavigate = (e) => {
-      const step = e?.detail?.step ?? e?.step ?? null; // supports CustomEvent or plain object
+      const step = e?.detail?.step ?? e?.step ?? null;
       if (!step) return;
       setCurrentStep(step);
     };
@@ -228,48 +191,61 @@ export default function Home() {
   }, []);
 
   const handleNextStep = () => {
-    if (currentStep === 5) {
-      setCurrentStep("5b");
-      return;
-    }
-    if (typeof currentStep === "number" && currentStep < 5) {
-      setCurrentStep((s) => s + 1);
-    }
+    if (currentStep === 5) return setCurrentStep("5b");
+    if (typeof currentStep === "number" && currentStep < 5) setCurrentStep((s) => s + 1);
   };
 
   const handleBackStep = () => {
-    if (currentStep === "5b") {
-      setCurrentStep(5);
-      return;
-    }
-    if (typeof currentStep === "number" && currentStep > 1) {
-      setCurrentStep((s) => s - 1);
-    }
+    if (currentStep === "5b") return setCurrentStep(5);
+    if (typeof currentStep === "number" && currentStep > 1) setCurrentStep((s) => s - 1);
   };
 
-  // keep your original submit behavior; InfoPanel.js already ensures "pin only on desktop"
   const handleWebsiteSubmit = useCallback((website) => {
-    let cleanWebsite = website.toLowerCase();
+    let cleanWebsite = String(website || "").toLowerCase().trim();
     if (cleanWebsite.startsWith("http://")) cleanWebsite = cleanWebsite.replace("http://", "");
     if (cleanWebsite.startsWith("https://")) cleanWebsite = cleanWebsite.replace("https://", "");
     if (cleanWebsite.startsWith("www.")) cleanWebsite = cleanWebsite.replace("www.", "");
-    setWebsiteData({ website: cleanWebsite, submittedAt: new Date() });
+
+    const payload = { website: cleanWebsite, submittedAt: new Date() };
+    setWebsiteData(payload);
+
+    try {
+      localStorage.setItem("websiteData", JSON.stringify({ site: cleanWebsite }));
+    } catch {}
+
+    clearBootstrapCache();
 
     setIsInfoOpen(true);
-    setIsPinned(true); // fine to keep; small screens won't shift because we only offset on lg+
+    setIsPinned(true);
   }, []);
 
-  const handleBusinessDataSubmit = useCallback((business) => setBusinessData(business), []);
-  const handleLanguageLocationSubmit = useCallback(
-    (data) => setLanguageLocationData(data),
-    []
-  );
-  const handleKeywordSubmit = useCallback((data) => setSelectedKeywords(data.keywords), []);
+  const handleBusinessDataSubmit = useCallback((business) => {
+    setBusinessData(business);
+    try {
+      localStorage.setItem("businessData", JSON.stringify(business || {}));
+    } catch {}
+    clearBootstrapCache();
+  }, []);
+
+  const handleLanguageLocationSubmit = useCallback((data) => {
+    setLanguageLocationData(data);
+    try {
+      localStorage.setItem("languageLocationData", JSON.stringify(data || {}));
+    } catch {}
+    clearBootstrapCache();
+  }, []);
+
+  const handleKeywordSubmit = useCallback((data) => {
+    const kws = Array.isArray(data?.keywords) ? data.keywords : [];
+    setSelectedKeywords(kws);
+    try {
+      localStorage.setItem("selectedKeywords", JSON.stringify(kws));
+    } catch {}
+  }, []);
+
   const handleCompetitorSubmit = useCallback(
     (data) =>
-      setCompetitorData(
-        data || { businessCompetitors: [], searchCompetitors: [], totalCompetitors: [] }
-      ),
+      setCompetitorData(data || { businessCompetitors: [], searchCompetitors: [], totalCompetitors: [] }),
     []
   );
 
@@ -277,38 +253,36 @@ export default function Home() {
     switch (currentStep) {
       case 1:
         return <Step1Slide1 onNext={handleNextStep} onWebsiteSubmit={handleWebsiteSubmit} />;
+
       case 2:
-        return (
-          <StepSlide2
-            onNext={handleNextStep}
-            onBack={handleBackStep}
-            onBusinessDataSubmit={handleBusinessDataSubmit}
-          />
-        );
+        return <StepSlide2 onNext={handleNextStep} onBack={handleBackStep} onBusinessDataSubmit={handleBusinessDataSubmit} />;
+
       case 3:
-        return (
-          <StepSlide3
-            onNext={handleNextStep}
-            onBack={handleBackStep}
-            onLanguageLocationSubmit={handleLanguageLocationSubmit}
-          />
-        );
+        return <StepSlide3 onNext={handleNextStep} onBack={handleBackStep} onLanguageLocationSubmit={handleLanguageLocationSubmit} />;
+
       case 4:
         return (
           <StepSlide4
             onNext={handleNextStep}
             onBack={handleBackStep}
             onKeywordSubmit={handleKeywordSubmit}
+            businessData={businessData}
+            languageLocationData={languageLocationData}
           />
         );
+
       case 5:
         return (
           <StepSlide5
             onNext={handleNextStep}
             onBack={handleBackStep}
             onCompetitorSubmit={handleCompetitorSubmit}
+            businessData={businessData}
+            languageLocationData={languageLocationData}
+            selectedKeywords={selectedKeywords}
           />
         );
+
       case "5b":
         return (
           <Step5Slide2
@@ -320,10 +294,10 @@ export default function Home() {
             competitorData={competitorData}
           />
         );
+
       case "dashboard":
         return (
           <Dashboard
-            // Start from a card: pass payload to open editor with content from multi-content.json
             onOpenContentEditor={(payload) => {
               if (!payload) {
                 setEditorData(null);
@@ -331,37 +305,19 @@ export default function Home() {
                 return;
               }
 
-              // Same matching logic as in the toEditor handler: pick by
-              // title first to avoid grabbing the wrong page when
-              // multiple pages share a domain.  Fall back to domain
-              // only if the title isn’t available.
               const match =
                 catalog.find((x) => x.title === payload.title) ||
                 catalog.find((x) => x.domain === payload.domain) ||
                 null;
 
               const merged = match
-                ? {
-                    ...match,
-                    ...payload,
-                    title: payload.title ?? match.title,
-                    content: payload.content ?? match.content,
-                  }
+                ? { ...match, ...payload, title: payload.title ?? match.title, content: payload.content ?? match.content }
                 : payload;
 
-              // Persist the selected domain to localStorage so the
-              // research panel opens the correct optimize dataset.  Without
-              // this, the optimize tab may retain the previous domain and
-              // default to the first page【14921893551222†L259-L279】.
               if (merged && merged.domain) {
                 try {
-                  localStorage.setItem(
-                    "websiteData",
-                    JSON.stringify({ site: merged.domain })
-                  );
-                } catch {
-                  // ignore storage errors
-                }
+                  localStorage.setItem("websiteData", JSON.stringify({ site: merged.domain }));
+                } catch {}
               }
 
               setEditorData(merged);
@@ -369,28 +325,26 @@ export default function Home() {
             }}
           />
         );
+
       case "contentEditor":
         return (
           <ContentEditor
-            data={editorData} // null => empty editor; object => prefilled
+            data={editorData}
             onBackToDashboard={() => {
               setEditorData(null);
               setCurrentStep("dashboard");
             }}
           />
         );
+
       default:
         return <Step1Slide1 onNext={handleNextStep} onWebsiteSubmit={handleWebsiteSubmit} />;
     }
   };
 
-  // Only desktop shifts left when the info panel is open/pinned.
   const mainOffsetClass =
-    isInfoOpen || isPinned
-      ? "ml-[56px] md:ml-[72px] lg:ml-[510px]"
-      : "ml-[56px] md:ml-[72px] lg:ml-[80px]";
+    isInfoOpen || isPinned ? "ml-[56px] md:ml-[72px] lg:ml-[510px]" : "ml-[56px] md:ml-[72px] lg:ml-[80px]";
 
-  // Switch the left sidebar content when Content Editor is active
   const sidebarVariant = currentStep === "contentEditor" ? "editor" : "default";
 
   return (
@@ -417,59 +371,39 @@ export default function Home() {
 
       <ThemeToggle />
 
-      {/* FLEX COLUMN ROOT */}
-      <main
-        className={`flex-1 min-w-0 flex flex-col min-h-0 transition-all duration-300 ${mainOffsetClass}`}
-      >
-        {/* Steps header (hidden on 5b & dashboard & editor) */}
-        {currentStep !== "5b" &&
-          currentStep !== "dashboard" &&
-          currentStep !== "contentEditor" && (
-            <>
-              {/* Mobile: 3 / 2 steps – centered, dotted connectors, lowered */}
-              <MobileStepsThreeTwo currentStep={currentStep} />
+      <main className={`flex-1 min-w-0 flex flex-col min-h-0 transition-all duration-300 ${mainOffsetClass}`}>
+        {currentStep !== "5b" && currentStep !== "dashboard" && currentStep !== "contentEditor" && (
+          <>
+            <MobileStepsThreeTwo currentStep={currentStep} />
 
-              {/* Tablet/Desktop: original full Steps bar */}
-              <div className="hidden sm:flex w-full justify-center">
-                <div
-                  className="
-                    max-w-[100%] w-full rounded-tr-2xl rounded-tl-2xl
-                    px-5 md:px-6 py-5 md:py-6 bg-[var(--bg-panel)]
-                    text-sm md:text-base
-                    overflow-hidden
-                  "
-                >
-                  <div className="flex justify-center">
-                    <Steps currentStep={currentStep === "5b" ? 5 : currentStep} />
-                  </div>
+            <div className="hidden sm:flex w-full justify-center">
+              <div className="max-w-[100%] w-full rounded-tr-2xl rounded-tl-2xl px-5 md:px-6 py-5 md:py-6 bg-[var(--bg-panel)] text-sm md:text-base overflow-hidden">
+                <div className="flex justify-center">
+                  <Steps currentStep={currentStep === "5b" ? 5 : currentStep} />
                 </div>
               </div>
-            </>
-          )}
+            </div>
+          </>
+        )}
 
-        {/* HOST PANEL — the only scroll container */}
-        <div className="flex-1 min-w-0 h-full flex justifyцентр items-start no-scrollbar">
+        <div className="flex-1 min-w-0 h-full flex justify-center items-start no-scrollbar">
           <style jsx global>{`
             .no-scrollbar {
-              -ms-overflow-style: none; /* IE & Edge */
-              scrollbar-width: none; /* Firefox */
+              -ms-overflow-style: none;
+              scrollbar-width: none;
             }
             .no-scrollbar::-webkit-scrollbar {
-              display: none; /* Chrome, Safari, Opera */
+              display: none;
             }
           `}</style>
 
           <div
             ref={scrollContainerRef}
-            className={`relative flex-1 min-w-0 h-full bg-[var(--bg-panel)] shadow-sm 
-              ${
-                currentStep === "dashboard" ||
-                currentStep === "contentEditor" ||
-                currentStep === "5b"
-                  ? "rounded-2xl"
-                  : "rounded-bl-2xl rounded-br-2xl"
-              } 
-              overflow-y-scroll overscroll-contain no-scrollbar`}
+            className={`relative flex-1 min-w-0 h-full bg-[var(--bg-panel)] shadow-sm ${
+              currentStep === "dashboard" || currentStep === "contentEditor" || currentStep === "5b"
+                ? "rounded-2xl"
+                : "rounded-bl-2xl rounded-br-2xl"
+            } overflow-y-scroll overscroll-contain no-scrollbar`}
           >
             {renderCurrentStep()}
           </div>

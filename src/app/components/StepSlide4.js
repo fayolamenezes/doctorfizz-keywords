@@ -3,8 +3,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { ArrowRight, ArrowLeft, Plus, X, Check } from "lucide-react";
 
-export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
-  /* ---------------- State ---------------- */
+export default function StepSlide4({
+  onNext,
+  onBack,
+  onKeywordSubmit,
+  businessData,
+  languageLocationData,
+}) {
   const [selectedKeywords, setSelectedKeywords] = useState([]);
   const [customKeyword, setCustomKeyword] = useState("");
   const [showSummary, setShowSummary] = useState(false);
@@ -24,7 +29,6 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
 
   const lastSubmittedData = useRef(null);
 
-  /* ---------------- Utilities ---------------- */
   const normalizeHost = useCallback((input) => {
     if (!input || typeof input !== "string") return null;
     let s = input.trim().toLowerCase();
@@ -38,23 +42,25 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
     return s.replace(/^www\./, "");
   }, []);
 
+  const getStoredJson = useCallback((key) => {
+    try {
+      const raw = localStorage.getItem(key) ?? sessionStorage.getItem(key);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }, []);
+
   const getStoredSite = useCallback(() => {
-    const keys = [
-      "websiteData",
-      "site",
-      "website",
-      "selectedWebsite",
-      "drfizzm.site",
-      "drfizzm.website",
-    ];
+    const keys = ["websiteData", "site", "website", "selectedWebsite", "drfizzm.site", "drfizzm.website"];
     for (const k of keys) {
       try {
         const raw = localStorage.getItem(k) ?? sessionStorage.getItem(k);
         if (!raw) continue;
         try {
           const obj = JSON.parse(raw);
-          const val =
-            obj?.website || obj?.site || obj?.domain || obj?.host || raw;
+          const val = obj?.website || obj?.site || obj?.domain || obj?.host || raw;
           const host = normalizeHost(val);
           if (host) return host;
         } catch {
@@ -77,7 +83,42 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
     return "example.com";
   }, [normalizeHost, getStoredSite]);
 
-  /* ---------------- Load keywords via Serper-backed API ---------------- */
+  const buildLocationString = useCallback((ll) => {
+    const city = (ll?.city || "").trim();
+    const state = (ll?.state || "").trim();
+    const country = (ll?.country || "").trim();
+    return [city, state, country].filter(Boolean).join(", ");
+  }, []);
+
+  const getContext = useCallback(() => {
+    const b = businessData || getStoredJson("businessData") || {};
+    const ll = languageLocationData || getStoredJson("languageLocationData") || {};
+    return {
+      industry: (b?.industry || "").trim(),
+      offering: (b?.offering || "").trim(),
+      category: (b?.category || "").trim(),
+      language: (ll?.language || "").trim(),
+      location: buildLocationString(ll),
+      country: (ll?.country || "").trim(),
+      state: (ll?.state || "").trim(),
+      city: (ll?.city || "").trim(),
+    };
+  }, [businessData, languageLocationData, getStoredJson, buildLocationString]);
+
+  const makeKey = useCallback((domain, industry, location) => {
+    return [domain || "", industry || "", location || ""].map((x) => String(x || "").trim().toLowerCase()).join("|");
+  }, []);
+
+  const readBootstrap = useCallback(() => {
+    try {
+      const raw = localStorage.getItem("drfizz.bootstrap");
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
 
@@ -87,11 +128,49 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
 
       try {
         const domain = getTargetSite();
+        const ctx = getContext();
 
+        // 1) try bootstrap cache
+        const cached = readBootstrap();
+        const expectedKey = makeKey(domain, ctx.industry, ctx.location);
+        const storedKey = localStorage.getItem("drfizz.bootstrap.key") || "";
+
+        if (cached && storedKey === expectedKey && Array.isArray(cached?.keywords?.keywords)) {
+          let kw = cached.keywords.keywords;
+
+          const seen = new Set();
+          kw = kw
+            .map((k) => (k || "").toString().trim())
+            .filter((k) => {
+              if (!k) return false;
+              const key = k.toLowerCase();
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            })
+            .slice(0, 8);
+
+          const final = kw.length ? kw.concat("More") : ["Keyword 1","Keyword 2","Keyword 3","Keyword 4","Keyword 5","Keyword 6","Keyword 7","Keyword 8","More"];
+          if (active) setSuggestedKeywords(final);
+          if (active) setIsLoadingKeywords(false);
+          return;
+        }
+
+        // 2) fallback API
         const res = await fetch("/api/keywords/suggest", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ domain }),
+          body: JSON.stringify({
+            domain,
+            industry: ctx.industry,
+            offering: ctx.offering,
+            category: ctx.category,
+            language: ctx.language,
+            location: ctx.location,
+            country: ctx.country,
+            state: ctx.state,
+            city: ctx.city,
+          }),
         });
 
         if (!res.ok) throw new Error(`Keyword API failed (${res.status})`);
@@ -99,7 +178,6 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
         const data = await res.json();
         let kw = Array.isArray(data.keywords) ? data.keywords : [];
 
-        // dedupe + trim to 8 suggestions
         const seen = new Set();
         kw = kw
           .map((k) => (k || "").toString().trim())
@@ -112,36 +190,12 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
           })
           .slice(0, 8);
 
-        const final =
-          kw.length > 0
-            ? kw.concat("More")
-            : [
-                "Keyword 1",
-                "Keyword 2",
-                "Keyword 3",
-                "Keyword 4",
-                "Keyword 5",
-                "Keyword 6",
-                "Keyword 7",
-                "Keyword 8",
-                "More",
-              ];
-
+        const final = kw.length ? kw.concat("More") : ["Keyword 1","Keyword 2","Keyword 3","Keyword 4","Keyword 5","Keyword 6","Keyword 7","Keyword 8","More"];
         if (active) setSuggestedKeywords(final);
       } catch (err) {
         if (active) {
           setLoadError(err?.message || "Failed to fetch keywords");
-          setSuggestedKeywords([
-            "Keyword 1",
-            "Keyword 2",
-            "Keyword 3",
-            "Keyword 4",
-            "Keyword 5",
-            "Keyword 6",
-            "Keyword 7",
-            "Keyword 8",
-            "More",
-          ]);
+          setSuggestedKeywords(["Keyword 1","Keyword 2","Keyword 3","Keyword 4","Keyword 5","Keyword 6","Keyword 7","Keyword 8","More"]);
         }
       } finally {
         if (active) setIsLoadingKeywords(false);
@@ -149,12 +203,9 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
     }
 
     loadKeywords();
-    return () => {
-      active = false;
-    };
-  }, [getTargetSite]);
+    return () => { active = false; };
+  }, [getTargetSite, getContext, readBootstrap, makeKey]);
 
-  /* ---------------- Fixed panel height ---------------- */
   const recomputePanelHeight = () => {
     if (!panelRef.current) return;
     const vpH = window.innerHeight;
@@ -180,7 +231,6 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
     recomputePanelHeight();
   }, [showSummary, selectedKeywords.length, showInlineMoreInput]);
 
-  /* ---------------- Keyword handlers ---------------- */
   const handleKeywordToggle = (keyword) => {
     if (isLoadingKeywords && keyword === "More") return;
 
@@ -191,9 +241,7 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
     }
 
     setSelectedKeywords((prev) =>
-      prev.includes(keyword)
-        ? prev.filter((k) => k !== keyword)
-        : [...prev, keyword]
+      prev.includes(keyword) ? prev.filter((k) => k !== keyword) : [...prev, keyword]
     );
   };
 
@@ -221,17 +269,14 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
     setShowSummary(false);
   };
 
-  /* ---------------- Submit to parent + summary toggle ---------------- */
   useEffect(() => {
     if (selectedKeywords.length > 0) {
       const payload = { keywords: selectedKeywords };
       const curr = JSON.stringify(payload);
-
       if (curr !== JSON.stringify(lastSubmittedData.current)) {
         lastSubmittedData.current = payload;
         onKeywordSubmit?.(payload);
       }
-
       setShowSummary(true);
     } else {
       setShowSummary(false);
@@ -239,44 +284,25 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
     }
   }, [selectedKeywords, onKeywordSubmit]);
 
-  /* ---------------- Auto-scroll to bottom ---------------- */
   useEffect(() => {
     if (tailRef.current) {
       requestAnimationFrame(() => {
-        tailRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "end",
-        });
+        tailRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       });
     }
-  }, [
-    showSummary,
-    selectedKeywords.length,
-    showInlineMoreInput,
-    isLoadingKeywords,
-  ]);
+  }, [showSummary, selectedKeywords.length, showInlineMoreInput, isLoadingKeywords]);
 
-  /* ---------------- UI ---------------- */
   return (
     <div className="w-full h-full flex flex-col bg-transparent overflow-x-hidden">
-      {/* Fixed-height section */}
       <div className="px-3 sm:px-4 md:px-6 pt-4 sm:pt-5 md:pt-6">
         <div
           ref={panelRef}
           className="mx-auto w-full max-w-[1120px] rounded-2xl bg-transparent box-border"
-          style={{
-            padding: "0px 24px",
-            height: panelHeight ? `${panelHeight}px` : "auto",
-          }}
+          style={{ padding: "0px 24px", height: panelHeight ? `${panelHeight}px` : "auto" }}
         >
           <style jsx>{`
-            .inner-scroll {
-              scrollbar-width: none;
-              -ms-overflow-style: none;
-            }
-            .inner-scroll::-webkit-scrollbar {
-              display: none;
-            }
+            .inner-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+            .inner-scroll::-webkit-scrollbar { display: none; }
             .chip-skel {
               display: inline-block;
               border-radius: 0.75rem;
@@ -285,36 +311,18 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
               background: var(--border);
               animation: pulse 1.2s ease-in-out infinite;
             }
-            @media (max-width: 640px) {
-              .chip-skel {
-                height: 32px;
-                width: 72px;
-              }
-            }
-            @keyframes pulse {
-              0%,
-              100% {
-                opacity: 0.6;
-              }
-              50% {
-                opacity: 1;
-              }
-            }
+            @media (max-width: 640px) { .chip-skel { height: 32px; width: 72px; } }
+            @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
           `}</style>
 
-          <div
-            ref={scrollRef}
-            className="inner-scroll h-full w-full overflow-y-auto"
-          >
+          <div ref={scrollRef} className="inner-scroll h-full w-full overflow-y-auto">
             <div className="flex flex-col items-start text-start gap-5 sm:gap-6 md:gap-8 max-w-[820px] mx-auto">
-              {/* Step label */}
               <div className="text-[11px] sm:text-[12px] md:text-[13px] text-[var(--muted)] font-medium">
                 Step - 4
               </div>
 
               <div className="spacer-line w-[80%] self-start h-[1px] bg-[#d45427] mt-[-1%]" />
 
-              {/* Heading */}
               <div className="space-y-2.5 sm:space-y-3 max-w-[640px]">
                 <h1 className="text-[16px] sm:text-[18px] md:text-[22px] lg:text-[26px] font-bold text-[var(--text)]">
                   Unlock high-impact keywords.
@@ -329,96 +337,75 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
                 </p>
               </div>
 
-              {/* Keyword suggestions */}
               <div className="w-full max-w-[880px] space-y-5 sm:space-y-6">
                 <div className="flex flex-wrap justify-start gap-2 sm:gap-2.5 md:gap-3 -mx-1">
-                  {/* Skeletons */}
-                  {isLoadingKeywords &&
-                    suggestedKeywords.length === 0 &&
-                    Array.from({ length: 8 }).map((_, i) => (
-                      <span key={`skel-${i}`} className="chip-skel mx-1" />
-                    ))}
+                  {isLoadingKeywords && suggestedKeywords.length === 0 &&
+                    Array.from({ length: 8 }).map((_, i) => <span key={`skel-${i}`} className="chip-skel mx-1" />)
+                  }
 
-                  {/* Real chips */}
-                  {!isLoadingKeywords &&
-                    suggestedKeywords.map((keyword) => {
-                      const isSelected = selectedKeywords.includes(keyword);
+                  {!isLoadingKeywords && suggestedKeywords.map((keyword) => {
+                    const isSelected = selectedKeywords.includes(keyword);
 
-                      if (keyword === "More" && showInlineMoreInput) {
-                        return (
-                          <div
-                            key="more-input"
-                            className="flex flex-wrap items-center gap-2 mx-1 w-full sm:w-auto"
-                          >
-                            <input
-                              ref={moreInputRef}
-                              type="text"
-                              placeholder="Add your own keyword"
-                              value={customKeyword}
-                              onChange={(e) =>
-                                setCustomKeyword(e.target.value)
-                              }
-                              onKeyDown={handleKeyDown}
-                              className="w-full sm:w-[220px] px-3 sm:px-4 py-2 border border-[#d45427] rounded-xl bg-[var(--input)] text-[12px] sm:text-[13px] md:text-[14px] text-[var(--text)] placeholder:text-[var(--muted)] focus:outline-none focus:border-[#d45427]"
-                            />
-                            <button
-                              onClick={handleAddCustom}
-                              disabled={!customKeyword.trim()}
-                              type="button"
-                              className="w-full sm:w-auto px-3 sm:px-4 py-2 bg-[image:var(--infoHighlight-gradient)] text-white rounded-xl hover:opacity-90 disabled:opacity-70 disabled:cursor-not-allowed transition-opacity duration-200"
-                              aria-label="Add custom keyword"
-                            >
-                              <Plus size={16} />
-                            </button>
-                          </div>
-                        );
-                      }
-
+                    if (keyword === "More" && showInlineMoreInput) {
                       return (
-                        <button
-                          key={keyword}
-                          type="button"
-                          aria-pressed={isSelected}
-                          onClick={() => handleKeywordToggle(keyword)}
-                          className={`keyword-chip group inline-flex items-center justify-between mx-1 px-3.5 sm:px-4 py-2.5 min-h-[34px] sm:min-h-[36px] text-[11px] sm:text-[12px] md:text-[13px] leading-normal ${
-                            isSelected ? "active" : ""
-                          }`}
-                        >
-                          <span className="truncate max-w-[150px] sm:max-w-[180px] md:max-w-none">
-                            {keyword}
-                          </span>
-
-                          {keyword !== "More" && (
-                            <>
-                              {!isSelected && (
-                                <Plus
-                                  size={16}
-                                  className="ml-1 flex-shrink-0"
-                                />
-                              )}
-                              {isSelected && (
-                                <span className="relative ml-1 inline-flex w-4 h-4 items-center justify-center flex-shrink-0">
-                                  <Check
-                                    size={16}
-                                    className="absolute opacity-100 group-hover:opacity-0 transition-opacity duration-150"
-                                    style={{ color: "#d45427" }}
-                                  />
-                                  <X
-                                    size={16}
-                                    className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-                                    style={{ color: "#d45427" }}
-                                  />
-                                </span>
-                              )}
-                            </>
-                          )}
-                        </button>
+                        <div key="more-input" className="flex flex-wrap items-center gap-2 mx-1 w-full sm:w-auto">
+                          <input
+                            ref={moreInputRef}
+                            type="text"
+                            placeholder="Add your own keyword"
+                            value={customKeyword}
+                            onChange={(e) => setCustomKeyword(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            className="w-full sm:w-[220px] px-3 sm:px-4 py-2 border border-[#d45427] rounded-xl bg-[var(--input)] text-[12px] sm:text-[13px] md:text-[14px] text-[var(--text)] placeholder:text-[var(--muted)] focus:outline-none focus:border-[#d45427]"
+                          />
+                          <button
+                            onClick={handleAddCustom}
+                            disabled={!customKeyword.trim()}
+                            type="button"
+                            className="w-full sm:w-auto px-3 sm:px-4 py-2 bg-[image:var(--infoHighlight-gradient)] text-white rounded-xl hover:opacity-90 disabled:opacity-70 disabled:cursor-not-allowed transition-opacity duration-200"
+                            aria-label="Add custom keyword"
+                          >
+                            <Plus size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setShowInlineMoreInput(false); setCustomKeyword(""); }}
+                            className="px-2 py-2 text-[var(--muted)] hover:text-red-500 rounded-xl"
+                            title="Cancel"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
                       );
-                    })}
+                    }
+
+                    return (
+                      <button
+                        key={keyword}
+                        type="button"
+                        aria-pressed={isSelected}
+                        onClick={() => handleKeywordToggle(keyword)}
+                        className={`keyword-chip group inline-flex items-center justify-between mx-1 px-3.5 sm:px-4 py-2.5 min-h-[34px] sm:min-h-[36px] text-[11px] sm:text-[12px] md:text-[13px] leading-normal ${isSelected ? "active" : ""}`}
+                      >
+                        <span className="truncate max-w-[150px] sm:max-w-[180px] md:max-w-none">{keyword}</span>
+
+                        {keyword !== "More" && (
+                          <>
+                            {!isSelected && <Plus size={16} className="ml-1 flex-shrink-0" />}
+                            {isSelected && (
+                              <span className="relative ml-1 inline-flex w-4 h-4 items-center justify-center flex-shrink-0">
+                                <Check size={16} className="absolute opacity-100 group-hover:opacity-0 transition-opacity duration-150" style={{ color: "#d45427" }} />
+                                <X size={16} className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150" style={{ color: "#d45427" }} />
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              {/* Summary */}
               {showSummary && (
                 <div className="max-w=[640px] text-left self-start mt-5 sm:mt-6">
                   <h3 className="text-[15px] sm:text-[16px] md:text-[18px] font-bold text=[var(--text)] mb-2.5 sm:mb-3">
@@ -429,6 +416,14 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
                   <p className="text-[12px] sm:text-[13px] md:text-[15px] text-[var(--muted)]">
                     You can always view more information in Info Tab
                   </p>
+
+                  <button
+                    type="button"
+                    onClick={handleReset}
+                    className="mt-4 inline-flex items-center gap-2 rounded-full bg-[var(--input)] px-4 py-2 text-[12px] text-[var(--text)] border border-[#d45427]"
+                  >
+                    Reset
+                  </button>
                 </div>
               )}
 
@@ -439,7 +434,6 @@ export default function StepSlide4({ onNext, onBack, onKeywordSubmit }) {
         </div>
       </div>
 
-      {/* Bottom bar */}
       <div ref={bottomBarRef} className="flex-shrink-0 bg-transparent">
         <div className="border-t border-[var(--border)]" />
         <div className="mx-auto w-full max-w-[1120px] px-3 sm:px-4 md:px-6">

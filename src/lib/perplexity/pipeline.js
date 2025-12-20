@@ -2,13 +2,37 @@ import { perplexityChat } from "@/lib/perplexity/client";
 import { SiteProfileSchema, KeywordsSchema, CompetitorsSchema } from "@/lib/perplexity/schemas";
 import { extractJsonObjectLoose, cleanList, toDomainish, normalizeHost } from "@/lib/perplexity/utils";
 import { collectPublicSignals } from "@/lib/perplexity/publicSignals";
+import { cacheGet, cacheSet } from "@/lib/perplexity/cache";
 
-/**
- * Step 1: Force the model to correctly classify what the business is,
- * using public signals + its own web browsing capability (Sonar models). :contentReference[oaicite:8]{index=8}
- */
-export async function getSiteProfile({ input, industry = "", location = "" }) {
-  const signals = await collectPublicSignals(input);
+/* ----------------- helpers (NEW) ----------------- */
+function escapeRegex(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripTrailingGeo(kw, geoTokens) {
+  let s = String(kw || "").trim();
+  if (!s) return s;
+
+  for (const t of geoTokens) {
+    if (!t) continue;
+    const re = new RegExp(`([,\\s]+)${escapeRegex(t)}$`, "i");
+    s = s.replace(re, "").trim();
+  }
+
+  // cleanup trailing punctuation
+  s = s.replace(/[,\-–—]+$/, "").trim();
+  return s;
+}
+
+export async function getSiteProfile({ input, industry = "", location = "", cacheKey = "" }) {
+  if (cacheKey) {
+    const cachedSignals = cacheGet(`signals:${cacheKey}`);
+    const cachedProfile = cacheGet(`profile:${cacheKey}`);
+    if (cachedSignals && cachedProfile) return { profile: cachedProfile, signals: cachedSignals };
+  }
+
+  const signals = (cacheKey && cacheGet(`signals:${cacheKey}`)) || (await collectPublicSignals(input));
+  if (cacheKey) cacheSet(`signals:${cacheKey}`, signals);
 
   const system = `
 You are an SEO intelligence engine.
@@ -40,7 +64,7 @@ ${signals.internalPages
   )
   .join("\n\n")}
 
-Robots/sitemaps (may help identify platform/content):
+Robots/sitemaps:
 - robots ok: ${signals.robots.ok} status: ${signals.robots.status}
 - sitemap candidates: ${signals.robots.sitemaps.join(", ")}
 
@@ -49,7 +73,7 @@ TASK:
 2) Choose businessType (product/service/marketplace/publisher/community/saas/unknown).
 3) Provide 5–10 short "offerings" terms that define its universe.
 4) Provide confidence 0..1.
-5) List the public signals/sources you used (URLs or source titles).
+5) List the public signals/sources you used.
 `.trim();
 
   const { content } = await perplexityChat({
@@ -63,27 +87,30 @@ TASK:
   });
 
   const parsed = extractJsonObjectLoose(content) || {};
-  return {
-    profile: {
-      domain: parsed.domain || signals.domain,
-      businessType: parsed.businessType || "unknown",
-      primaryOffering: parsed.primaryOffering || "",
-      industry: parsed.industry || "",
-      offerings: cleanList(parsed.offerings, { max: 12 }),
-      geoFocus: parsed.geoFocus || "",
-      confidence:
-        typeof parsed.confidence === "number" ? parsed.confidence : 0.35,
-      publicSignalsUsed: Array.isArray(parsed.publicSignalsUsed) ? parsed.publicSignalsUsed : [],
-      assumptions: Array.isArray(parsed.assumptions) ? parsed.assumptions : [],
-    },
-    signals,
+  const profile = {
+    domain: parsed.domain || signals.domain,
+    businessType: parsed.businessType || "unknown",
+    primaryOffering: parsed.primaryOffering || "",
+    industry: parsed.industry || industry || "",
+    offerings: cleanList(parsed.offerings, { max: 12 }),
+    geoFocus: parsed.geoFocus || location || "",
+    confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.35,
+    publicSignalsUsed: Array.isArray(parsed.publicSignalsUsed) ? parsed.publicSignalsUsed : [],
+    assumptions: Array.isArray(parsed.assumptions) ? parsed.assumptions : [],
   };
+
+  if (cacheKey) cacheSet(`profile:${cacheKey}`, profile);
+
+  return { profile, signals };
 }
 
-/**
- * Step 2: Keywords grounded to the profile universe (Perplexity-only).
- */
-export async function getKeywordsFromProfile({ profile, signals, location = "" }) {
+export async function getKeywordsFromProfile({ profile, signals, location = "", cacheKey = "" }) {
+  if (cacheKey) {
+    const cached = cacheGet(`keywords:${cacheKey}`);
+    if (cached) return cached;
+  }
+
+  // NEW: better instructions so location isn't appended everywhere
   const system = `
 You are an SEO keyword strategist.
 Return ONLY valid JSON matching the schema.
@@ -92,7 +119,10 @@ Hard rules:
 - Keywords must match the business universe described by offerings/primaryOffering.
 - Prefer real search phrases (2–5 words).
 - Include a mix: informational, commercial, transactional.
-- Avoid irrelevant industries even if the brand name is ambiguous.
+- DO NOT append location to every keyword.
+- Mix geo naturally:
+  - ~70% keywords should be NON-geo (no city/state/country)
+  - ~30% keywords can be geo-modified (include location naturally)
 `.trim();
 
   const user = `
@@ -101,14 +131,15 @@ Business type: ${profile.businessType}
 Industry: ${profile.industry}
 Primary offering: ${profile.primaryOffering}
 Offerings universe tokens: ${profile.offerings.join(", ")}
-Geo focus hint: ${location || profile.geoFocus || "none"}
+Geo focus (use for SOME keywords only): ${location || profile.geoFocus || "none"}
 
-(For grounding) Homepage title: ${signals.homepage.title}
+Homepage title: ${signals.homepage.title}
 Homepage meta: ${signals.homepage.metaDescription}
 
 TASK:
-Generate 20 keyword phrases that a real user would search to find this business category.
-Also produce up to 6 clusters with short names and cluster keywords.
+Generate:
+- 20 keyword phrases (70% non-geo, 30% geo-modified).
+- Up to 6 clusters.
 `.trim();
 
   const { content } = await perplexityChat({
@@ -122,32 +153,63 @@ Also produce up to 6 clusters with short names and cluster keywords.
   });
 
   const parsed = extractJsonObjectLoose(content) || {};
-  return {
+  const out = {
     domain: profile.domain,
     keywords: cleanList(parsed.keywords, { max: 24 }),
     clusters: Array.isArray(parsed.clusters) ? parsed.clusters : [],
     assumptions: Array.isArray(parsed.assumptions) ? parsed.assumptions : [],
   };
+
+  // NEW: safety net post-processing to avoid geo at the end for all keywords
+  const geo = String(location || profile.geoFocus || "").trim();
+  const geoTokens = geo
+    ? geo.split(",").map((x) => x.trim()).filter(Boolean)
+    : [];
+
+  if (geoTokens.length && out.keywords.length) {
+    // detect which keywords end with any geo token
+    const geoLike = [];
+    const nonGeo = [];
+
+    for (const k of out.keywords) {
+      const lower = String(k || "").toLowerCase();
+      const hasGeoAtEnd = geoTokens.some((t) => lower.endsWith(t.toLowerCase()));
+      if (hasGeoAtEnd) geoLike.push(k);
+      else nonGeo.push(k);
+    }
+
+    const keepGeoCount = Math.max(3, Math.round(out.keywords.length * 0.3)); // ~30% keep geo
+    const keptGeo = geoLike.slice(0, keepGeoCount);
+
+    // everything else becomes non-geo (strip trailing geo)
+    const cleaned = nonGeo
+      .concat(geoLike.slice(keepGeoCount))
+      .map((k) => stripTrailingGeo(k, geoTokens));
+
+    out.keywords = cleanList([...cleaned, ...keptGeo], { max: 24 });
+  }
+
+  if (cacheKey) cacheSet(`keywords:${cacheKey}`, out);
+  return out;
 }
 
-/**
- * Step 3: Competitors grounded to the profile universe (Perplexity-only).
- * Business competitors MUST be same universe sellers/providers.
- * Search competitors can include aggregators/rank-holders.
- */
-export async function getCompetitorsFromProfile({ profile, signals, seedKeywords = [] }) {
+export async function getCompetitorsFromProfile({ profile, signals, seedKeywords = [], cacheKey = "" }) {
+  if (cacheKey) {
+    const cached = cacheGet(`competitors:${cacheKey}`);
+    if (cached) return cached;
+  }
+
   const system = `
 You are an SEO competitive research engine.
 Return ONLY valid JSON matching the schema.
 
 Definitions:
-- businessCompetitors: direct substitutes offering similar products/services (same universe).
+- businessCompetitors: direct substitutes offering similar products/services.
 - searchCompetitors: domains that often rank for these keywords (aggregators allowed).
 
 Hard rules:
-- businessCompetitors MUST be in the same universe as offerings/primaryOffering.
-- searchCompetitors should represent SERP real-estate owners: directories, review platforms, coupon sites, publishers, affiliate blogs, marketplaces, etc.
-- Prefer domains (example.com). If unsure, provide brand name.
+- businessCompetitors MUST be same universe as offerings.
+- searchCompetitors MUST be different from businessCompetitors.
 `.trim();
 
   const seeds = seedKeywords.slice(0, 8).join(", ");
@@ -159,16 +221,15 @@ Industry: ${profile.industry}
 Primary offering: ${profile.primaryOffering}
 Offerings universe tokens: ${profile.offerings.join(", ")}
 
-(For grounding) Homepage title: ${signals.homepage.title}
+Homepage title: ${signals.homepage.title}
 Homepage meta: ${signals.homepage.metaDescription}
 
-Seed keywords (if any): ${seeds || "none"}
+Seed keywords: ${seeds || "none"}
 
 TASK:
-1) Suggest 8 businessCompetitors (direct substitutes).
-2) Suggest 12 searchCompetitors (SERP aggregators & rank-holders).
-3) Bucket search competitors into:
-directSellers, marketplaces, couponSites, affiliateBlogs, directories, publishers, reviewPlatforms, other.
+1) 8 businessCompetitors
+2) 12 searchCompetitors
+3) Buckets for search competitors
 `.trim();
 
   const { content } = await perplexityChat({
@@ -184,23 +245,26 @@ directSellers, marketplaces, couponSites, affiliateBlogs, directories, publisher
   const parsed = extractJsonObjectLoose(content) || {};
   const domain = profile.domain;
 
-  const businessCompetitors = cleanList(
-    (parsed.businessCompetitors || []).map(toDomainish),
-    { max: 12 }
-  ).filter((x) => normalizeHost(x) !== domain);
+  const businessCompetitors = cleanList((parsed.businessCompetitors || []).map(toDomainish), { max: 12 }).filter(
+    (x) => normalizeHost(x) !== domain
+  );
 
-  const searchCompetitors = cleanList(
-    (parsed.searchCompetitors || []).map(toDomainish),
-    { max: 20 }
-  ).filter((x) => normalizeHost(x) !== domain);
+  const bizSet = new Set(businessCompetitors.map((x) => normalizeHost(x)));
+
+  const searchCompetitors = cleanList((parsed.searchCompetitors || []).map(toDomainish), { max: 20 })
+    .filter((x) => normalizeHost(x) !== domain)
+    .filter((x) => !bizSet.has(normalizeHost(x)));
 
   const buckets = parsed.buckets && typeof parsed.buckets === "object" ? parsed.buckets : {};
 
-  return {
+  const out = {
     domain,
     businessCompetitors,
     searchCompetitors,
     buckets,
     assumptions: Array.isArray(parsed.assumptions) ? parsed.assumptions : [],
   };
+
+  if (cacheKey) cacheSet(`competitors:${cacheKey}`, out);
+  return out;
 }

@@ -1,3 +1,4 @@
+// src/lib/perplexity/publicSignals.js
 import { ensureUrl, normalizeHost } from "@/lib/perplexity/utils";
 
 async function fetchText(url, { timeoutMs = 12000, headers = {} } = {}) {
@@ -54,7 +55,6 @@ function extractInternalLinks(html = "", baseUrl = "") {
     if (out.length >= 10) break;
   }
 
-  // Prefer likely informative pages
   const priority = (u) => {
     const s = u.toLowerCase();
     if (s.includes("/about")) return 0;
@@ -78,38 +78,54 @@ function extractRobotsSitemaps(robotsText = "") {
   return Array.from(new Set(urls)).slice(0, 5);
 }
 
+function cleanArray(arr, max) {
+  const seen = new Set();
+  const out = [];
+  for (const x of arr || []) {
+    const v = String(x || "").trim();
+    if (!v) continue;
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 export async function collectPublicSignals(inputUrlOrDomain) {
   const siteUrl = ensureUrl(inputUrlOrDomain);
   const domain = normalizeHost(siteUrl);
 
-  // 1) Homepage
-  const home = await fetchText(siteUrl, { timeoutMs: 15000 });
+  // 1) Homepage (reduced timeout)
+  const home = await fetchText(siteUrl, { timeoutMs: 9000 });
   const html = home.ok ? home.text : "";
 
   const title = extractTitle(html);
   const metaDescription = extractMetaDescription(html);
   const internalLinks = extractInternalLinks(html, siteUrl);
 
-  // 2) 1–2 internal pages (best-effort)
-  const internalPages = [];
-  for (const u of internalLinks.slice(0, 2)) {
-    const r = await fetchText(u, { timeoutMs: 12000 });
-    internalPages.push({
-      url: u,
-      ok: r.ok,
-      status: r.status,
-      title: extractTitle(r.text),
-      metaDescription: extractMetaDescription(r.text),
-      snippet: String(r.text || "").replace(/\s+/g, " ").slice(0, 800),
-    });
-  }
+  // 2) 1 internal page — fetched via Promise.all
+  const internalTargets = internalLinks.slice(0, 1);
+  const internalPages = await Promise.all(
+    internalTargets.map(async (u) => {
+      const r = await fetchText(u, { timeoutMs: 8000 });
+      return {
+        url: u,
+        ok: r.ok,
+        status: r.status,
+        title: extractTitle(r.text),
+        metaDescription: extractMetaDescription(r.text),
+        snippet: String(r.text || "").replace(/\s+/g, " ").slice(0, 800),
+      };
+    })
+  );
 
-  // 3) robots.txt + sitemaps
+  // 3) robots.txt + sitemaps (reduced timeout)
   const robotsUrl = `${siteUrl.replace(/\/$/, "")}/robots.txt`;
-  const robots = await fetchText(robotsUrl, { timeoutMs: 10000 });
+  const robots = await fetchText(robotsUrl, { timeoutMs: 6000 });
   const sitemapsFromRobots = robots.ok ? extractRobotsSitemaps(robots.text) : [];
 
-  // 4) common sitemap fallbacks if robots didn’t list
   const fallbackSitemaps = sitemapsFromRobots.length
     ? []
     : [
@@ -136,19 +152,4 @@ export async function collectPublicSignals(inputUrlOrDomain) {
       sitemaps: cleanArray(sitemapsFromRobots.concat(fallbackSitemaps), 5),
     },
   };
-}
-
-function cleanArray(arr, max) {
-  const seen = new Set();
-  const out = [];
-  for (const x of arr || []) {
-    const v = String(x || "").trim();
-    if (!v) continue;
-    const k = v.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(v);
-    if (out.length >= max) break;
-  }
-  return out;
 }
