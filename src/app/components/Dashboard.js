@@ -2,7 +2,7 @@
 "use client";
 import Image from "next/image";
 import { Activity, ActivitySquare, AlertTriangle, BarChart3, BookOpen, Check, ChevronRight, Clock3, Eye, FileText, Gauge, Goal, HelpCircle, KeyRound, Lightbulb, Link2, Lock, Monitor, Network, PencilLine, RefreshCw, Rocket, Settings, ShieldCheck, Skull, SlidersHorizontal, Smartphone, SquareArrowOutUpRight, ThumbsDown, ThumbsUp, TrendingUp, TrendingDown, Wifi, X } from "lucide-react";
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo , useCallback} from "react";
 import { useSearchParams } from "next/navigation";
 import OpportunitiesSection from "./OpportunitiesSection";
 import NewOnPageSEOTable from "./NewOnPageSEOTable";
@@ -50,6 +50,38 @@ function normalizeDomain(input = "") {
   }
 }
 
+
+// ---- Client-side cache helpers (sessionStorage) ----
+const SEO_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function ssGet(key) {
+  try { return sessionStorage.getItem(key); } catch { return null; }
+}
+function ssSet(key, value) {
+  try { sessionStorage.setItem(key, value); } catch {}
+}
+function loadSeoCache(domain) {
+  if (typeof window === "undefined") return null;
+  const d = normalizeDomain(domain || "");
+  if (!d) return null;
+  const raw = ssGet(`drfizz:seo:${d}`);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (!parsed.data) return null;
+    return parsed; // { ts, data }
+  } catch {
+    return null;
+  }
+}
+function saveSeoCache(domain, data) {
+  if (typeof window === "undefined") return;
+  const d = normalizeDomain(domain || "");
+  if (!d) return;
+  ssSet(`drfizz:seo:${d}`, JSON.stringify({ ts: Date.now(), data }));
+  ssSet("drfizz:lastDomain", d);
+}
 // Add this helper inside Dashboard()
 
 /** Deterministic pseudo-random (stable per domain) */
@@ -432,6 +464,10 @@ export default function Dashboard({ onOpenContentEditor }) {
   const searchParams = useSearchParams();
   const [domain, setDomain] = useState(null);
 
+  // Cache bookkeeping (avoids refetch + keeps values instant after OAuth redirect)
+  const seoCacheTsRef = useRef(0);
+  const seoHydratedFromCacheRef = useRef(false);
+
   // Seed SEO state from any prefetch done in the wizard (Step5Slide2)
   const getInitialSeo = () => {
     if (typeof window !== "undefined" && window.__drfizzSeoPrefetch) {
@@ -446,6 +482,278 @@ export default function Dashboard({ onOpenContentEditor }) {
   const [seo, setSeo] = useState(initialSeo);
   const [seoError, setSeoError] = useState("");
   const [seoLoading, setSeoLoading] = useState(!initialSeo);
+
+  // ---------------- Google (GA4 + GSC) connection + metrics ----------------
+  const [googleStatus, setGoogleStatus] = useState({
+    loading: true,
+    connected: false,
+    email: null,
+    hasRefreshToken: false,
+    error: "",
+  });
+
+  const [ga4Properties, setGa4Properties] = useState([]);
+  const [ga4PropertyId, setGa4PropertyId] = useState("");
+  const [ga4Loading, setGa4Loading] = useState(false);
+  const [ga4Error, setGa4Error] = useState("");
+  // Expected shapes (depending on your API):
+  // - { ok:true, organicTraffic:number, leads:number, debug?:object }
+  // - or { ok:true, organicTraffic:{monthly,growth}, leads:{monthly,growth}, ... }
+  const [ga4Metrics, setGa4Metrics] = useState(null);
+
+  const [gscSites, setGscSites] = useState([]);
+  const [gscSiteUrl, setGscSiteUrl] = useState("");
+  const [gscLoading, setGscLoading] = useState(false);
+  const [gscError, setGscError] = useState("");
+  // Expected shapes (depending on your API):
+  // - { ok:true, keywordsTotal:number, top3:number, top10:number, top100:number, rows?:[], debug?:object }
+  const [gscMetrics, setGscMetrics] = useState(null);
+
+  const connectGoogle = () => {
+    try {
+      const returnTo = window.location.pathname + window.location.search + (window.location.hash || "#dashboard");
+      window.location.href = `/api/auth/google/start?returnTo=${encodeURIComponent(returnTo)}`;
+    } catch {
+      window.location.href = "/api/auth/google/start";
+    }
+  };
+
+  const refreshGoogleStatus = async () => {
+    try {
+      setGoogleStatus((s) => ({ ...s, loading: true, error: "" }));
+      const res = await fetch("/api/google/status", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || `Status failed: ${res.status}`);
+      setGoogleStatus({
+        loading: false,
+        connected: !!json?.connected,
+        email: json?.email || null,
+        hasRefreshToken: !!json?.hasRefreshToken,
+        error: "",
+      });
+      return json;
+    } catch (e) {
+      setGoogleStatus({
+        loading: false,
+        connected: false,
+        email: null,
+        hasRefreshToken: false,
+        error: e?.message || "Failed to load google status",
+      });
+      return null;
+    }
+  };
+
+// ---- Dedupe Google status fetches in Next.js dev StrictMode (double-mount) ----
+// In dev, React intentionally mounts/unmounts twice; this prevents duplicate /api/google/status calls.
+const ranInitialGoogleStatusRef = useRef(false);
+
+
+
+
+// Generic in-flight deduper for dev StrictMode double-mount (and quick successive triggers).
+const runOncePerKey = (key, fn) => {
+  if (typeof window === "undefined") return fn();
+  const w = window;
+  w.__dashInFlight = w.__dashInFlight || {};
+  if (w.__dashInFlight[key]) return w.__dashInFlight[key];
+  w.__dashInFlight[key] = Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      // Clear on next tick so future genuine navigations can refetch if needed.
+      setTimeout(() => {
+        try {
+          w.__dashInFlight[key] = null;
+        } catch {}
+      }, 0);
+    });
+  return w.__dashInFlight[key];
+};
+
+
+
+
+  const loadGa4Properties = async () => {
+    try {
+      setGa4Error("");
+      const res = await fetch("/api/ga4/properties", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok || json?.ok === false) throw new Error(json?.error || `GA4 properties failed: ${res.status}`);
+      const props = Array.isArray(json?.properties) ? json.properties : [];
+      setGa4Properties(props);
+      return props;
+    } catch (e) {
+      setGa4Error(e?.message || "Failed to load GA4 properties");
+      setGa4Properties([]);
+      return [];
+    }
+  };
+
+  const loadGscSites = async () => {
+    try {
+      setGscError("");
+      const res = await fetch("/api/gsc/sites", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok || json?.ok === false) throw new Error(json?.error || `GSC sites failed: ${res.status}`);
+      const sites = Array.isArray(json?.sites) ? json.sites : [];
+      setGscSites(sites);
+      return sites;
+    } catch (e) {
+      setGscError(e?.message || "Failed to load Search Console sites");
+      setGscSites([]);
+      return [];
+    }
+  };
+
+const fetchGa4Report = async () => {
+  try {
+    setGa4Loading(true);
+    setGa4Error("");
+    const res = await fetch("/api/ga4/report", { cache: "no-store" });
+    const json = await res.json();
+    if (!res.ok || json?.ok === false) throw new Error(json?.error || `GA4 report failed: ${res.status}`);
+    setGa4Metrics(json);
+    return json;
+  } catch (e) {
+    setGa4Metrics(null);
+    setGa4Error(e?.message || "Failed to fetch GA4 report");
+    return null;
+  } finally {
+    setGa4Loading(false);
+  }
+};
+
+const fetchGscKeywords = async () => {
+  try {
+    setGscLoading(true);
+    setGscError("");
+    const res = await fetch("/api/gsc/keywords", { cache: "no-store" });
+    const json = await res.json();
+    if (!res.ok || json?.ok === false) throw new Error(json?.error || `GSC keywords failed: ${res.status}`);
+    setGscMetrics(json);
+    return json;
+  } catch (e) {
+    setGscMetrics(null);
+    setGscError(e?.message || "Failed to fetch Search Console keywords");
+    return null;
+  } finally {
+    setGscLoading(false);
+  }
+};
+
+
+  const selectGa4Property = async (propertyId) => {
+  if (!propertyId) return null;
+  setGa4PropertyId(propertyId);
+  try {
+    setGa4Loading(true);
+    setGa4Error("");
+    const res = await fetch("/api/ga4/select-property", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ propertyId }),
+    });
+    const json = await res.json();
+    if (!res.ok || json?.ok === false)
+      throw new Error(json?.error || `GA4 select failed: ${res.status}`);
+
+    // Now that the property is stored in the cookie, fetch the real GA4 report.
+    const report = await fetchGa4Report();
+    return report;
+  } catch (e) {
+    setGa4Error(e?.message || "Failed to select GA4 property");
+    setGa4Metrics(null);
+    return null;
+  } finally {
+    setGa4Loading(false);
+  }
+};
+
+
+  const selectGscSite = async (siteUrl) => {
+  if (!siteUrl) return null;
+  setGscSiteUrl(siteUrl);
+  try {
+    setGscLoading(true);
+    setGscError("");
+
+    // Persist selection in cookie (required by /api/gsc/keywords)
+    const selRes = await fetch("/api/gsc/select-site", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ siteUrl }),
+    });
+    const selJson = await selRes.json().catch(() => ({}));
+    if (!selRes.ok || selJson?.ok === false) {
+      throw new Error(selJson?.error || `GSC select failed: ${selRes.status}`);
+    }
+
+    // Now fetch real keyword metrics for the selected site (server uses cookie)
+    const keywords = await fetchGscKeywords();
+    return keywords;
+  } catch (e) {
+    setGscError(e?.message || "Failed to select Search Console site");
+    setGscMetrics(null);
+    return null;
+  } finally {
+    setGscLoading(false);
+  }
+};
+
+
+  // On first load (and after OAuth redirect), refresh status.
+  useEffect(() => {
+    // NOTE: In Next.js dev + React StrictMode, components mount, unmount, then mount again.
+    // This guard prevents double-fire on initial mount (and avoids accidental loops).
+    if (ranInitialGoogleStatusRef.current) {
+      console.log("[Dashboard][SKIP] initial google status fetch (guarded)");
+      return;
+    }
+    ranInitialGoogleStatusRef.current = true;
+    console.log("[Dashboard][EFFECT] initial google status fetch");
+    void refreshGoogleStatus();
+  }, []);
+
+
+  // Once connected, load GA4 + GSC lists.
+  useEffect(() => {
+  if (!googleStatus.connected) return;
+
+  (async () => {
+    // 1) Try fetching reports immediately. If the user has already selected GA4 property / GSC site earlier
+    // (stored in cookies), these will succeed and we don't need to show any selector UI.
+    const [ga4First, gscFirst] = await Promise.all([fetchGa4Report(), fetchGscKeywords()]);
+
+    const needsGa4Selection =
+      !ga4First && /property not selected/i.test(ga4Error || "");
+    const needsGscSelection =
+      !gscFirst && /site not selected/i.test(gscError || "");
+
+    // 2) If anything is not selected yet, load selectable lists and auto-pick best defaults.
+    if (needsGa4Selection || needsGscSelection) {
+      const [props, sites] = await Promise.all([loadGa4Properties(), loadGscSites()]);
+
+      if (needsGa4Selection && !ga4PropertyId && props?.length) {
+        const first = props[0]?.propertyId || "";
+        if (first) await selectGa4Property(first);
+      }
+
+      if (needsGscSelection && !gscSiteUrl && sites?.length) {
+        const d = normalizeDomain(domain || "");
+        const pickUrl = (s) => (typeof s === "string" ? s : s?.siteUrl);
+
+        const match =
+          sites.find((s) => String(pickUrl(s) || "").includes(d)) || null;
+
+        const val = pickUrl(match) || pickUrl(sites[0]) || "";
+        if (val) await selectGscSite(val);
+      }
+    }
+  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [googleStatus.connected]);
+
+
 
 
 // ------- NEW: Load fallback Performance metrics from /public/data/seo-data.json (old behavior) -------
@@ -484,21 +792,54 @@ const fallbackSelected = useMemo(() => {
     setDomain(site);
   }, [searchParams]);
 
+  // NEW: Hydrate cached /api/seo response instantly (useful after OAuth redirect / page reload)
+  useEffect(() => {
+    if (!domain || domain === "example.com") return;
+    if (seo) return; // already have data (wizard prefetch or earlier state)
+
+    // IMPORTANT:
+    // We only hydrate SEO metrics from cache when returning from Google OAuth (we use #dashboard on redirect).
+    // On a normal first visit, we ALWAYS want the first render to be driven by a real /api/seo fetch.
+    const shouldHydrateFromCache =
+      typeof window !== "undefined" && window.location.hash === "#dashboard";
+    if (!shouldHydrateFromCache) return;
+
+    const cached = loadSeoCache(domain);
+    if (!cached?.data) return;
+
+    const age = Date.now() - (cached.ts || 0);
+    seoCacheTsRef.current = cached.ts || 0;
+    seoHydratedFromCacheRef.current = true;
+
+    // Show cached data immediately (no spinner / no delay)
+    setSeo(cached.data);
+    setSeoLoading(false);
+
+    // Optional: surface to console for debugging
+    console.log(`[Dashboard] Hydrated SEO from session cache (age ${Math.round(age / 1000)}s)`);
+  }, [domain, seo]);
+
   // Fetch unified SEO data from /api/seo whenever domain changes
   useEffect(() => {
     if (!domain || domain === "example.com") return;
 
-    // If we already have SEO data (prefetched from the wizard), skip refetch.
-    if (seo) return;
+    // If we already have SEO data, only refetch when cache is stale (keeps UI instant after OAuth redirect).
+    const cacheTs = seoCacheTsRef.current || 0;
+    const cacheAge = cacheTs ? (Date.now() - cacheTs) : Infinity;
+    const cacheFresh = cacheAge < SEO_CACHE_TTL_MS;
+
+    if (cacheFresh && (seo || seoHydratedFromCacheRef.current)) return;
+
+    const background = !!seo; // if we have cached/old data, refresh quietly
 
     let alive = true;
     (async () => {
       try {
-        setSeoLoading(true);
+        if (!background) setSeoLoading(true);
         setSeoError("");
 
         const url = `https://${domain}`;
-        const keyword = domain; // TODO: wire actual keyword later from onboarding
+const keyword = domain; // TODO: wire actual keyword later from onboarding
 
         const payload = {
           url,
@@ -512,11 +853,11 @@ const fallbackSelected = useMemo(() => {
 
         console.log("[Dashboard] Calling /api/seo with payload:", payload);
 
-        const res = await fetch("/api/seo", {
+        const res = await runOncePerKey(`seo:${domain}`, () => fetch("/api/seo", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-        });
+        }));
 
         if (!res.ok) {
           throw new Error(`Failed to load /api/seo: ${res.status}`);
@@ -525,7 +866,13 @@ const fallbackSelected = useMemo(() => {
         const json = await res.json();
         console.log("[Dashboard] /api/seo raw response:", json);
 
-        if (alive) setSeo(json);
+        if (alive) {
+          setSeo(json);
+          // Persist for instant paint on future reloads (e.g., OAuth redirect back to #dashboard)
+          saveSeoCache(domain, json);
+          seoCacheTsRef.current = Date.now();
+          seoHydratedFromCacheRef.current = false;
+        }
       } catch (e) {
         console.error("[Dashboard] Error while fetching /api/seo:", e);
         if (alive) setSeoError(e.message || "Failed to load /api/seo");
@@ -955,6 +1302,182 @@ const mapped = {
     return mapped;
   }, [seo, domain, fallbackSelected]);
 
+  // ---------------- NEW: Performance numbers wired from GA4/GSC (falls back gracefully) ----------------
+  const perfData = useMemo(() => {
+    const zeroPerf = {
+      organicTraffic: { monthly: 0, growth: 0 },
+      organicKeywords: { total: 0, top3: 0, top10: 0, top100: 0 },
+      leads: { monthly: 0, goal: 0, contactForm: 0, newsletter: 0, growth: 0 },
+    };
+
+    // If Google isn't connected, show 0s (no JSON/random fallback).
+    if (!googleStatus.connected) return zeroPerf;
+
+    // If connected but GA4/GSC isn't usable yet (no selection / no access / empty lists),
+    // keep showing 0s (no JSON/random fallback).
+    const gaErr = String(ga4Error || "");
+    const gsErr = String(gscError || "");
+    const bothErr = `${gaErr} ${gsErr}`.toLowerCase();
+
+    const needsGa4 = /property not selected/i.test(gaErr);
+    const needsGsc = /site not selected/i.test(gsErr);
+
+    const looksLikeAccess =
+      bothErr.includes("insufficient") ||
+      bothErr.includes("permission") ||
+      bothErr.includes("forbidden") ||
+      bothErr.includes("unauthorized") ||
+      bothErr.includes("not have") ||
+      bothErr.includes("not authorized") ||
+      bothErr.includes("not permitted");
+
+    const emptyLists =
+      (Array.isArray(ga4Properties) && ga4Properties.length === 0) ||
+      (Array.isArray(gscSites) && gscSites.length === 0);
+
+    if (needsGa4 || needsGsc || looksLikeAccess || emptyLists) return zeroPerf;
+
+    // If Google isn't connected, we intentionally show 0s (no demo/fallback) for GA4/GSC-driven metrics.
+    if (!googleStatus.connected) {
+      return {
+        organicTraffic: { monthly: 0, growth: 0 },
+        organicKeywords: { total: 0, top3: 0, top10: 0, top100: 0 },
+        leads: { monthly: 0, goal: 0, contactForm: 0, newsletter: 0, growth: 0 },
+      };
+    }
+    const d = seo?._meta?.domain || domain || "example.com";
+
+    // GA4 API might return numbers directly or nested objects. Support both.
+    const gaTrafficMonthly =
+      typeof ga4Metrics?.organicTraffic === "number"
+        ? ga4Metrics.organicTraffic
+        : ga4Metrics?.organicTraffic?.monthly;
+
+    const gaLeadsMonthly =
+      typeof ga4Metrics?.leads === "number"
+        ? ga4Metrics.leads
+        : ga4Metrics?.leads?.monthly;
+
+    // GSC API is expected to return total keyword count (+ optional breakdown)
+    const gscKwTotal =
+      typeof gscMetrics?.keywordsTotal === "number"
+        ? gscMetrics.keywordsTotal
+        : gscMetrics?.organicKeywords?.total;
+
+    const gscTop3 =
+      typeof gscMetrics?.top3 === "number"
+        ? gscMetrics.top3
+        : gscMetrics?.organicKeywords?.top3;
+
+    const gscTop10 =
+      typeof gscMetrics?.top10 === "number"
+        ? gscMetrics.top10
+        : gscMetrics?.organicKeywords?.top10;
+
+    const gscTop100 =
+      typeof gscMetrics?.top100 === "number"
+        ? gscMetrics.top100
+        : gscMetrics?.organicKeywords?.top100;
+
+    return buildPerformanceFallback({
+      domain: d,
+      api: {
+        trafficMonthly: typeof gaTrafficMonthly === "number" ? gaTrafficMonthly : undefined,
+        // (optional) trafficGrowth: ga4Metrics?.organicTraffic?.growth,
+        leadsMonthly: typeof gaLeadsMonthly === "number" ? gaLeadsMonthly : undefined,
+        // (optional) leadsGrowth: ga4Metrics?.leads?.growth,
+        keywordsTotal: typeof gscKwTotal === "number" ? gscKwTotal : undefined,
+        keywordsTop3: typeof gscTop3 === "number" ? gscTop3 : undefined,
+        keywordsTop10: typeof gscTop10 === "number" ? gscTop10 : undefined,
+        keywordsTop100: typeof gscTop100 === "number" ? gscTop100 : undefined,
+      },
+      jsonRow: fallbackSelected,
+    });
+  }, [seo, domain, fallbackSelected, ga4Metrics, gscMetrics, googleStatus.connected, ga4Error, gscError, ga4Properties, gscSites]);
+
+// ---------------- GA4/GSC UI notice state (for Performance cards) ----------------
+const analyticsNotice = useMemo(() => {
+    const toNum = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+  if (googleStatus.loading) return null;
+
+  // 1) Not connected
+  if (!googleStatus.connected) {
+    return {
+      kind: "disconnected",
+      title: "Connect to Google account",
+      message:
+        "Connect your Google account to see real Organic Traffic, Organic Keywords, and Leads on the dashboard.",
+    };
+  }
+
+  const gaErr = String(ga4Error || "");
+  const gsErr = String(gscError || "");
+  const bothErr = `${gaErr} ${gsErr}`.toLowerCase();
+
+  // 2) Connected but selection missing (cookie not set yet)
+  const needsGa4 = /property not selected/i.test(gaErr);
+  const needsGsc = /site not selected/i.test(gsErr);
+  if (needsGa4 || needsGsc) {
+    return {
+      kind: "needs_selection",
+      title: "Select your GA4 property & Search Console site",
+      message:
+        "We found your Google connection, but we still need you to select the correct GA4 property and/or Search Console site to load real metrics.",
+    };
+  }
+
+  // 3) Connected but account doesn't have access
+  const looksLikeAccess =
+    bothErr.includes("insufficient") ||
+    bothErr.includes("permission") ||
+    bothErr.includes("forbidden") ||
+    bothErr.includes("unauthorized") ||
+    bothErr.includes("not have") ||
+    bothErr.includes("not authorized") ||
+    bothErr.includes("not permitted");
+
+  if (looksLikeAccess) {
+    return {
+      kind: "no_access",
+      title: "This Gmail doesn’t have access to this site",
+      message:
+        "Your Google account is connected, but it doesn’t have GA4/GSC access for this website. Connect the correct Gmail or request access in GA4 / Search Console.",
+    };
+  }
+
+  // 4) Connected and APIs respond, but values are empty/0 (common when GA4 has no data or conversions not set)
+  const gaOk = !!ga4Metrics?.ok;
+  const gsOk = !!gscMetrics?.ok;
+
+  const gaTraffic =
+    typeof ga4Metrics?.organicTraffic === "number"
+      ? ga4Metrics.organicTraffic
+      : ga4Metrics?.organicTraffic?.monthly;
+
+  const gaLeads =
+    typeof ga4Metrics?.leads === "number"
+      ? ga4Metrics.leads
+      : ga4Metrics?.leads?.monthly;
+
+  const gsKw = typeof gscMetrics?.keywordsTotal === "number" ? gscMetrics.keywordsTotal : 0;
+
+  if ((gaOk || gsOk) && (toNum(gaTraffic) === 0) && (toNum(gaLeads) === 0) && (toNum(gsKw) === 0)) {
+    return {
+      kind: "no_data",
+      title: "No GA4/GSC data found for this site",
+      message:
+        "We couldn’t find GA4/GSC data for this website (last 28 days). Check that GA4 is installed, Search Console is verified, and conversions are configured for leads.",
+    };
+  }
+
+  return null;
+}, [googleStatus.loading, googleStatus.connected, ga4Error, gscError, ga4Metrics, gscMetrics]);
+
+
+
 
   // Flags to see what is API vs fallback for key metrics (logged once per load)
   const metricSources = useMemo(() => {
@@ -971,11 +1494,11 @@ const mapped = {
       serpFeatureCountsFromApi:
         selected.serp?.featuredSnippets !== 23 ||
         selected.serp?.peopleAlsoAsk !== 156,
-      organicTrafficIsPlaceholder: (selected?.organicTraffic?.monthly ?? 0) === 0,
-      organicKeywordsIsPlaceholder: (selected?.organicKeywords?.total ?? 0) === 0,
-      leadsIsPlaceholder: (selected?.leads?.monthly ?? 0) === 0,
+      organicTrafficIsPlaceholder: !ga4Metrics && (perfData?.organicTraffic?.monthly ?? 0) === 0,
+      organicKeywordsIsPlaceholder: !gscMetrics && (perfData?.organicKeywords?.total ?? 0) === 0,
+      leadsIsPlaceholder: !ga4Metrics && (perfData?.leads?.monthly ?? 0) === 0,
     };
-  }, [selected]);
+  }, [selected, perfData]);
 
   useEffect(() => {
     if (!seo || !metricSources) return;
@@ -1015,21 +1538,21 @@ const mapped = {
   const PS_DESKTOP = selected?.pageSpeed?.desktop ?? 0;
   const PS_MOBILE  = selected?.pageSpeed?.mobile ?? 0;
 
-  const OT_TARGET  = selected?.organicTraffic?.monthly ?? 0;
-  const OK_TOTAL   = selected?.organicKeywords?.total ?? 0;
+  const OT_TARGET  = perfData?.organicTraffic?.monthly ?? 0;
+  const OK_TOTAL   = perfData?.organicKeywords?.total ?? 0;
 
   // If breakdown present, use it; else fall back to your demo split
   const OK_SPLIT = {
-    top3:  selected?.organicKeywords?.top3  ?? 0,
-    top10: selected?.organicKeywords?.top10 ?? 0,
-    top100:selected?.organicKeywords?.top100?? 0,
+    top3:  perfData?.organicKeywords?.top3  ?? 0,
+    top10: perfData?.organicKeywords?.top10 ?? 0,
+    top100:perfData?.organicKeywords?.top100?? 0,
     total: OK_TOTAL,
   };
 
-  const LEADS_TARGET = selected?.leads?.monthly ?? 0;
-  const LEADS_GOAL   = selected?.leads?.goal ?? 0;
-  const CF_VALUE     = selected?.leads?.contactForm ?? 0;
-  const NL_VALUE     = selected?.leads?.newsletter ?? 0;
+  const LEADS_TARGET = perfData?.leads?.monthly ?? 0;
+  const LEADS_GOAL   = perfData?.leads?.goal ?? 0;
+  const CF_VALUE     = perfData?.leads?.contactForm ?? 0;
+  const NL_VALUE     = perfData?.leads?.newsletter ?? 0;
   const CF_LIMIT     = 800;
   const NL_LIMIT     = 400;
 
@@ -1077,10 +1600,11 @@ const MASTER_MS = 1000;                 // single duration for everything
 const [prog, setProg] = useState(0);    // 0 → 1 (eased)
 
 useEffect(() => {
-  if (!seo) return;                     // gate on data to avoid "second wave"
+  if (!seo) return; // gate on data to avoid "second wave"
   let raf;
-  const start = performance.now();
+  let start = null; // rAF timestamp (same clock as `now`)
   const tick = (now) => {
+    if (start === null) start = now;
     const tRaw = (now - start) / MASTER_MS;
     const t = Math.max(0, Math.min(1, tRaw));
     const ease = 1 - Math.pow(1 - t, 3); // cubic-out
@@ -1090,6 +1614,7 @@ useEffect(() => {
   raf = requestAnimationFrame(tick);
   return () => cancelAnimationFrame(raf);
 }, [seo]);
+
 
 // ---- Derived animated values (no per-widget RAFs) ----
 const drValue = Math.max(0, DR_TARGET * prog);
@@ -1329,7 +1854,7 @@ const seoTableProg = Math.max(0, prog);
 
         <section className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-3">
           {/* Domain Rating */}
-          <div className="rounded-[14px] border border-[var(--border)] bg-[var(--input)] p-4 shadow-sm">
+          <div id="df-google-panel" className="rounded-[14px] border border-[var(--border)] bg-[var(--input)] p-4 shadow-sm">
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2">
                 <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--input)] text-[var(--muted)]">
@@ -1803,7 +2328,201 @@ const seoTableProg = Math.max(0, prog);
         {/* Row 3 */}
         <h2 className="text-[16px] font-bold text-[var(--text)] mb-3 ml-1">Performance (SEO Metrics)</h2>
 
-        <section className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+        {/* Google connection (GA4 + Search Console) */}
+        <div className="mb-4 rounded-[14px] border border-[var(--border)] bg-[var(--card)] p-4 shadow-sm">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--input)] text-[var(--muted)]">
+                <KeyRound size={16} />
+              </span>
+              <div>
+                <div className="text-[13px] font-semibold text-[var(--text)]">
+                  Google connection
+                </div>
+                <div className="text-[12px] text-[var(--muted)]">
+                  {googleStatus.loading ? (
+                    "Checking status…"
+                  ) : googleStatus.connected ? (
+                    <>
+                      Connected as{" "}
+                      <span className="font-semibold text-[var(--text)]">
+                        {googleStatus.email || "your Google account"}
+                      </span>
+                      {googleStatus.hasRefreshToken ? (
+                        <span className="ml-2 inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--input)] px-2 py-0.5 text-[11px] text-[var(--muted)]">
+                          <Check size={13} /> refresh token saved
+                        </span>
+                      ) : (
+                        <span className="ml-2 inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--input)] px-2 py-0.5 text-[11px] text-[var(--muted)]">
+                          <AlertTriangle size={13} /> no refresh token
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    "Not connected"
+                  )}
+                </div>
+
+                {(googleStatus.error || ga4Error || gscError) ? (
+                  <div className="mt-1 text-[12px] text-red-400">
+                    {googleStatus.error || ga4Error || gscError}
+                  </div>
+                ) : null}
+              
+
+                <div className="mt-1 text-[11px] text-[var(--muted)]">
+                  GA4 &amp; Search Console data is available only for sites you own or have access to.
+                </div></div>
+            </div>
+
+            <div className="flex flex-col gap-2 md:flex-row md:items-center">
+              {!googleStatus.connected ? (
+                <button
+                  onClick={connectGoogle}
+                  className="inline-flex items-center justify-center gap-2 rounded-[12px] border border-[var(--border)] bg-[var(--text)] px-4 py-2 text-[12px] font-semibold text-[var(--bg)] transition hover:opacity-90"
+                >
+                  <ShieldCheck size={16} />
+                  Connect Google
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => {
+                      refreshGoogleStatus();
+                      loadGa4Properties();
+                      loadGscSites();
+                    }}
+                    className="inline-flex items-center justify-center gap-2 rounded-[12px] border border-[var(--border)] bg-[var(--input)] px-3 py-2 text-[12px] font-semibold text-[var(--text)] transition hover:bg-[var(--hover)]"
+                    title="Refresh connection + lists"
+                  >
+                    <RefreshCw size={16} />
+                    Refresh
+                  </button>
+
+                  <div className="flex flex-col gap-1">
+                    <div className="text-[11px] text-[var(--muted)]">GA4 property</div>
+                    <select
+                      value={ga4PropertyId}
+                      onChange={(e) => selectGa4Property(e.target.value)}
+                      className="h-9 min-w-[240px] rounded-[12px] border border-[var(--border)] bg-[var(--input)] px-3 text-[12px] text-[var(--text)] outline-none"
+                      disabled={ga4Loading || !ga4Properties.length}
+                    >
+                      {!ga4Properties.length ? (
+                        <option value="">No GA4 properties found</option>
+                      ) : (
+                        <>
+                          <option value="">Select…</option>
+                          {ga4Properties.map((p) => (
+                            <option key={p.propertyId} value={p.propertyId}>
+                              {p.displayName ? `${p.displayName} (${p.propertyId})` : p.propertyId}
+                            </option>
+                          ))}
+                        </>
+                      )}
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <div className="text-[11px] text-[var(--muted)]">Search Console site</div>
+                    <select
+                      value={gscSiteUrl}
+                      onChange={(e) => selectGscSite(e.target.value)}
+                      className="h-9 min-w-[240px] rounded-[12px] border border-[var(--border)] bg-[var(--input)] px-3 text-[12px] text-[var(--text)] outline-none"
+                      disabled={gscLoading || !gscSites.length}
+                    >
+                      {!gscSites.length ? (
+                        <option value="">No sites found</option>
+                      ) : (
+                        <>
+                          <option value="">Select…</option>
+                          {gscSites.map((s) => {
+                            const url = typeof s === "string" ? s : s?.siteUrl;
+                            const label = typeof s === "string" ? s : (s?.siteUrl || "");
+                            if (!url) return null;
+                            return (
+                              <option key={url} value={url}>
+                                {label}
+                              </option>
+                            );
+                          })}
+                        </>
+                      )}
+                    </select>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Quick debug bubble (optional) */}
+          {false ? (
+            <div className="mt-3 rounded-[12px] border border-[var(--border)] bg-[var(--input)] p-3 text-[12px] text-[var(--muted)]">
+              <div className="mb-1 font-semibold text-[var(--text)]">Debug</div>
+              {ga4Metrics?.debug ? (
+                <div className="mb-1">
+                  <span className="font-semibold text-[var(--text)]">GA4:</span>{" "}
+                  {ga4Metrics.debug.note || JSON.stringify(ga4Metrics.debug)}
+                </div>
+              ) : null}
+              {gscMetrics?.debug ? (
+                <div>
+                  <span className="font-semibold text-[var(--text)]">GSC:</span>{" "}
+                  {gscMetrics.debug.note || JSON.stringify(gscMetrics.debug)}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+
+{analyticsNotice ? (
+  <div
+    className="mb-4 flex flex-col gap-2 rounded-[16px] border border-[var(--border)] bg-[var(--input)] p-4 md:flex-row md:items-center md:justify-between"
+    role="status"
+    aria-live="polite"
+  >
+    <div className="flex items-start gap-3">
+      <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-[12px] border border-[var(--border)] bg-[#FFF5D9] text-[#B98500]">
+        <AlertTriangle size={16} />
+      </span>
+      <div>
+        <div className="text-[13px] font-semibold text-[var(--text)]">
+          {analyticsNotice.title}
+        </div>
+        <div className="text-[12px] text-[var(--muted)]">
+          {analyticsNotice.message}
+        </div>
+      </div>
+    </div>
+
+    <div className="flex items-center gap-2">
+      {!googleStatus.connected ? (
+        <button
+          onClick={connectGoogle}
+          className="inline-flex h-9 items-center gap-2 rounded-[12px] px-3 text-[12px] font-semibold text-white shadow-sm bg-[image:var(--infoHighlight-gradient)] hover:opacity-90 transition"
+        >
+          <KeyRound size={14} />
+          Connect
+        </button>
+      ) : (
+        <button
+          onClick={() => {
+            // re-run status + re-fetch metrics
+            refreshGoogleStatus();
+            fetchGa4Report();
+            fetchGscKeywords();
+          }}
+          className="inline-flex h-9 items-center gap-2 rounded-[12px] border border-[var(--border)] bg-[var(--input)] px-3 text-[12px] font-semibold text-[var(--text)] hover:bg-[#F6F8FB]"
+        >
+          <RefreshCw size={14} />
+          Retry
+        </button>
+      )}
+    </div>
+  </div>
+) : null}
+
+<section className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-3">
           {/* Organic Traffic */}
           <div className="rounded-[14px] border border-[var(--border)] bg-[var(--input)] p-4 shadow-sm">
             <div className="flex items-start justify-between">
@@ -1812,7 +2531,7 @@ const seoTableProg = Math.max(0, prog);
                   <BarChart3 size={16} />
                 </span>
                 <span className="flex items-center gap-1 text-[13px] text-gray-700 leading-relaxed">Organic traffic</span>
-                {(selected?.organicTraffic?.growth ?? 0) > 0 && (
+                {(perfData?.organicTraffic?.growth ?? 0) > 0 && (
                   <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-[#EAF8F1] px-2 py-0.5 text-[11px] font-medium text-[#178A5D]">
                     <span className="h-2 w-2 rounded-full bg-[#22C55E]" />
                     Positive Growth
@@ -1829,7 +2548,7 @@ const seoTableProg = Math.max(0, prog);
                 {formatCompactNumber(otValue)}
               </div>
               <div className="ml-1 inline-flex items-center gap-1 rounded-full bg-[#EAF8F1] px-2 py-0.5 text-[11px] font-medium text-[#178A5D]">
-                ↗︎ +{selected?.organicTraffic?.growth ?? 0}
+                ↗︎ +{perfData?.organicTraffic?.growth ?? 0}
               </div>
             </div>
 
@@ -1850,7 +2569,7 @@ const seoTableProg = Math.max(0, prog);
                   <path d="M 8 120 C 60 60, 110 85, 150 95 S 240 110, 270 88 S 350 60, 385 92 S 455 60, 512 20" fill="none" stroke="#22C55E" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" pathLength="100" strokeDasharray="100" strokeDashoffset={100 - otProg * 100} />
                 </g>
                 <g fontFamily="ui-sans-serif, system-ui" fontSize="10" fill="#8D96A8" textAnchor="start">
-                  <text x="500" y="18">+{selected?.organicTraffic?.growth ?? 0}</text>
+                  <text x="500" y="18">+{perfData?.organicTraffic?.growth ?? 0}</text>
                   <text x="500" y="54">18</text>
                   <text x="500" y="90">12</text>
                 </g>
@@ -1858,8 +2577,15 @@ const seoTableProg = Math.max(0, prog);
             </div>
 
             <div className="mt-3 flex justify-end">
-              <button type="button" className="inline-flex items-center gap-1 rounded-[10px] border border-[var(--border)] bg-[var(--input)] px-3 py-2 text-[12px] font-medium text-[var(--muted)]">
-                Connect to Google Analytics <ChevronRight size={14} />
+              <button
+                type="button"
+                onClick={() => {
+                  // Always open Google OAuth (lets user reconnect / switch accounts)
+                  return connectGoogle();
+                }}
+                className="inline-flex items-center gap-1 rounded-[10px] border border-[var(--border)] bg-[var(--input)] px-3 py-2 text-[12px] font-medium text-[var(--muted)] hover:opacity-90"
+              >
+                {!googleStatus.connected ? "Connect to Google Analytics" : "Manage Google connection"} <ChevronRight size={14} />
               </button>
             </div>
           </div>
@@ -1904,11 +2630,26 @@ const seoTableProg = Math.max(0, prog);
             </div>
 
             <div className="mt-3 flex justify-end">
-              <button type="button" className="inline-flex items-center gap-2 rounded-[10px] border border-[var(--border)] bg-[var(--input)] px-3 py-2 text-[12px] font-medium text-[var(--muted)]">
+              <button
+                type="button"
+                onClick={() => {
+                  // Always open Google OAuth (lets user reconnect / switch accounts)
+                  return connectGoogle();
+                }}
+                className="inline-flex items-center gap-2 rounded-[10px] border border-[var(--border)] bg-[var(--input)] px-3 py-2 text-[12px] font-medium text-[var(--muted)] hover:opacity-90"
+              >
                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--input)]">
                   <FileText size={12} className="text-[#3178C6]" />
                 </span>
-                Connect to <span className="font-semibold text-[var(--text)]">Google Search Console</span>
+                {!googleStatus.connected ? (
+                  <>
+                    Connect to <span className="font-semibold text-[var(--text)]">Google Search Console</span>
+                  </>
+                ) : (
+                  <>
+                    Manage <span className="font-semibold text-[var(--text)]">Search Console</span>
+                  </>
+                )}
                 <ChevronRight size={14} />
               </button>
             </div>
@@ -1928,7 +2669,7 @@ const seoTableProg = Math.max(0, prog);
 
               <div className="flex items-center gap-2">
                 {(() => {
-                  const g = selected?.leads?.growth;
+                  const g = perfData?.leads?.growth;
                   const isNum = typeof g === "number" && !Number.isNaN(g);
                   const up = isNum ? g >= 0 : true;
                   const sign = isNum ? (up ? "+" : "−") : "+";

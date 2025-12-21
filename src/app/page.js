@@ -84,9 +84,19 @@ function clearBootstrapCache() {
 export default function Home() {
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
-  const [currentStep, setCurrentStep] = useState(1);
+  const [currentStep, setCurrentStep] = useState(() => {
+  // Avoid "Step 1" flash on initial paint when URL is #dashboard (e.g., OAuth return)
+  if (typeof window === "undefined") return 1;
 
-  const [websiteData, setWebsiteData] = useState(null);
+  const url = new URL(window.location.href);
+  const connected = url.searchParams.get("connected") === "1";
+  const hash = window.location.hash;
+
+  if (connected || hash === "#dashboard") return "dashboard";
+  if (hash === "#editor") return "contentEditor";
+  return 1;
+});
+const [websiteData, setWebsiteData] = useState(null);
   const [businessData, setBusinessData] = useState(null);
   const [languageLocationData, setLanguageLocationData] = useState(null);
   const [selectedKeywords, setSelectedKeywords] = useState([]);
@@ -100,7 +110,25 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (window.location.hash === "#editor") setCurrentStep("contentEditor");
+
+    const url = new URL(window.location.href);
+    const connected = url.searchParams.get("connected") === "1";
+    const hash = window.location.hash;
+
+    // If returning from Google OAuth, jump straight to dashboard view.
+    if (connected || hash === "#dashboard") {
+      setCurrentStep("dashboard");
+
+      // Optional: clean ?connected=1 so refreshes look normal
+      if (connected) {
+        url.searchParams.delete("connected");
+        window.history.replaceState(null, "", url.pathname + url.search + (hash || ""));
+      }
+      return;
+    }
+
+    // Existing behavior
+    if (hash === "#editor") setCurrentStep("contentEditor");
   }, []);
 
   useEffect(() => {
