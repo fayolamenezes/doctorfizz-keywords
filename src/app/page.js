@@ -81,22 +81,47 @@ function clearBootstrapCache() {
   } catch {}
 }
 
+/**
+ * ✅ NEW: Fire-and-forget warmup so opportunities scan starts in Step-1 itself.
+ * This ensures titles/content are cached before Dashboard loads.
+ */
+function warmupOpportunitiesScan(cleanWebsite) {
+  let domain = String(cleanWebsite || "").trim().toLowerCase();
+  if (!domain) return;
+
+  if (domain.startsWith("http://")) domain = domain.replace("http://", "");
+  if (domain.startsWith("https://")) domain = domain.replace("https://", "");
+  if (domain.startsWith("www.")) domain = domain.slice(4);
+
+  const websiteUrl = `https://${domain}`;
+
+  try {
+    fetch("/api/seo/opportunities", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ websiteUrl }),
+    }).catch(() => {});
+  } catch {}
+}
+
 export default function Home() {
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
+
   const [currentStep, setCurrentStep] = useState(() => {
-  // Avoid "Step 1" flash on initial paint when URL is #dashboard (e.g., OAuth return)
-  if (typeof window === "undefined") return 1;
+    // Avoid "Step 1" flash on initial paint when URL is #dashboard (e.g., OAuth return)
+    if (typeof window === "undefined") return 1;
 
-  const url = new URL(window.location.href);
-  const connected = url.searchParams.get("connected") === "1";
-  const hash = window.location.hash;
+    const url = new URL(window.location.href);
+    const connected = url.searchParams.get("connected") === "1";
+    const hash = window.location.hash;
 
-  if (connected || hash === "#dashboard") return "dashboard";
-  if (hash === "#editor") return "contentEditor";
-  return 1;
-});
-const [websiteData, setWebsiteData] = useState(null);
+    if (connected || hash === "#dashboard") return "dashboard";
+    if (hash === "#editor") return "contentEditor";
+    return 1;
+  });
+
+  const [websiteData, setWebsiteData] = useState(null);
   const [businessData, setBusinessData] = useState(null);
   const [languageLocationData, setLanguageLocationData] = useState(null);
   const [selectedKeywords, setSelectedKeywords] = useState([]);
@@ -107,6 +132,9 @@ const [websiteData, setWebsiteData] = useState(null);
 
   const infoRef = useRef(null);
   const scrollContainerRef = useRef(null);
+
+  // ✅ NEW: prevents re-warming repeatedly for same domain
+  const lastWarmedDomainRef = useRef(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -196,9 +224,21 @@ const [websiteData, setWebsiteData] = useState(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    // Keep URL hash in sync with the active view.
+    // This helps avoid "Step 1" flashes on refresh and makes back/forward behavior predictable.
     if (currentStep === "contentEditor") {
       if (window.location.hash !== "#editor") history.replaceState(null, "", "#editor");
-    } else if (window.location.hash === "#editor") {
+      return;
+    }
+
+    if (currentStep === "dashboard") {
+      if (window.location.hash !== "#dashboard") history.replaceState(null, "", "#dashboard");
+      return;
+    }
+
+    // Wizard/steps views: clear dashboard/editor hashes
+    if (window.location.hash === "#editor" || window.location.hash === "#dashboard") {
       history.replaceState(null, "", "#");
     }
   }, [currentStep]);
@@ -245,6 +285,12 @@ const [websiteData, setWebsiteData] = useState(null);
 
     setIsInfoOpen(true);
     setIsPinned(true);
+
+    // ✅ NEW: start opportunities scan right after domain submit
+    if (cleanWebsite && lastWarmedDomainRef.current !== cleanWebsite) {
+      lastWarmedDomainRef.current = cleanWebsite;
+      warmupOpportunitiesScan(cleanWebsite);
+    }
   }, []);
 
   const handleBusinessDataSubmit = useCallback((business) => {
@@ -283,10 +329,22 @@ const [websiteData, setWebsiteData] = useState(null);
         return <Step1Slide1 onNext={handleNextStep} onWebsiteSubmit={handleWebsiteSubmit} />;
 
       case 2:
-        return <StepSlide2 onNext={handleNextStep} onBack={handleBackStep} onBusinessDataSubmit={handleBusinessDataSubmit} />;
+        return (
+          <StepSlide2
+            onNext={handleNextStep}
+            onBack={handleBackStep}
+            onBusinessDataSubmit={handleBusinessDataSubmit}
+          />
+        );
 
       case 3:
-        return <StepSlide3 onNext={handleNextStep} onBack={handleBackStep} onLanguageLocationSubmit={handleLanguageLocationSubmit} />;
+        return (
+          <StepSlide3
+            onNext={handleNextStep}
+            onBack={handleBackStep}
+            onLanguageLocationSubmit={handleLanguageLocationSubmit}
+          />
+        );
 
       case 4:
         return (

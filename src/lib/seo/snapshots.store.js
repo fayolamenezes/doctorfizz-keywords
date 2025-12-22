@@ -1,3 +1,9 @@
+function clampPct(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(100, Math.round(x)));
+}
+
 // src/lib/seo/snapshots.store.js
 import { randomUUID } from "crypto";
 
@@ -97,15 +103,29 @@ export function upsertOpportunitiesSnapshot(hostname, payload = {}) {
   const updatedAt = Date.now();
 
   const normItems = (arr, isDraft) =>
-    (Array.isArray(arr) ? arr : []).map((x) => ({
-      // ✅ spread first, then normalize so normalized fields WIN
-      ...(x || {}),
-      url: x?.url || "",
-      title: x?.title || "",
-      description: x?.description || "",
-      wordCount: Number(x?.wordCount) || 0,
-      isDraft: Boolean(isDraft),
-    }));
+    (Array.isArray(arr) ? arr : []).map((x) => {
+      const rawHtml = typeof x?.contentHtml === "string" ? x.contentHtml : "";
+      const cappedHtml = rawHtml.length > 120_000 ? rawHtml.slice(0, 120_000) : rawHtml;
+
+      return {
+        // ✅ spread first, then normalize so normalized fields WIN
+        ...(x || {}),
+        url: x?.url || "",
+        title: x?.title || "",
+        description: x?.description || "",
+        wordCount: Number(x?.wordCount) || 0,
+
+        // ✅ NEW: store pre-sanitized editor-ready html (optional)
+        contentHtml: cappedHtml,
+
+        // ✅ NEW: plagiarism fields (precomputed in scan or refreshed later)
+        plagiarism: clampPct(x?.plagiarism),
+        plagiarismCheckedAt: x?.plagiarismCheckedAt || null,
+        plagiarismSources: Array.isArray(x?.plagiarismSources) ? x.plagiarismSources : [],
+
+        isDraft: Boolean(isDraft),
+      };
+    });
 
   const next = {
     updatedAt,

@@ -15,10 +15,7 @@ export async function POST(req) {
     const allowSubdomains = Boolean(body?.allowSubdomains);
 
     if (!websiteUrl) {
-      return NextResponse.json(
-        { error: "websiteUrl is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "websiteUrl is required" }, { status: 400 });
     }
 
     const hostname = getHostname(websiteUrl);
@@ -26,13 +23,12 @@ export async function POST(req) {
       return NextResponse.json({ error: "Invalid websiteUrl" }, { status: 400 });
     }
 
-    // ✅ include allowSubdomains in the cache key (prevents mixing modes)
-    const cacheKey = allowSubdomains ? `${hostname}::subdomains` : hostname;
-
     // 1) SnapshotStore first (published only)
-    const cached = getLatestOpportunities(cacheKey, {
+    // IMPORTANT: pass hostname (NOT a custom cacheKey); the store already keys by hostname + allowSubdomains + mode.
+    const cached = getLatestOpportunities(hostname, {
       ttlMs: TTL_MS,
       mode: "published",
+      allowSubdomains,
     });
 
     if (cached) {
@@ -49,20 +45,56 @@ export async function POST(req) {
       const payload = {
         websiteUrl,
         hostname,
-        blogs: blogs.map(({ url, title, description, wordCount, isDraft }) => ({
-          url,
-          title,
-          description,
-          wordCount,
-          isDraft: Boolean(isDraft),
-        })),
-        pages: pages.map(({ url, title, description, wordCount, isDraft }) => ({
-          url,
-          title,
-          description,
-          wordCount,
-          isDraft: Boolean(isDraft),
-        })),
+        blogs: blogs.map(
+          ({
+            url,
+            title,
+            description,
+            wordCount,
+            isDraft,
+            contentHtml,
+            plagiarism,
+            plagiarismCheckedAt,
+            plagiarismSources,
+          }) => ({
+            url,
+            title,
+            description,
+            wordCount,
+            isDraft: Boolean(isDraft),
+            // ✅ pass through pre-sanitized html if scan stored it
+            contentHtml: typeof contentHtml === "string" ? contentHtml : "",
+            // ✅ plagiarism fields (precomputed during scan)
+            plagiarism: typeof plagiarism === "number" ? plagiarism : null,
+            plagiarismCheckedAt: plagiarismCheckedAt || null,
+            plagiarismSources: Array.isArray(plagiarismSources) ? plagiarismSources : [],
+          })
+        ),
+        pages: pages.map(
+          ({
+            url,
+            title,
+            description,
+            wordCount,
+            isDraft,
+            contentHtml,
+            plagiarism,
+            plagiarismCheckedAt,
+            plagiarismSources,
+          }) => ({
+            url,
+            title,
+            description,
+            wordCount,
+            isDraft: Boolean(isDraft),
+            // ✅ pass through pre-sanitized html if scan stored it
+            contentHtml: typeof contentHtml === "string" ? contentHtml : "",
+            // ✅ plagiarism fields (precomputed during scan)
+            plagiarism: typeof plagiarism === "number" ? plagiarism : null,
+            plagiarismCheckedAt: plagiarismCheckedAt || null,
+            plagiarismSources: Array.isArray(plagiarismSources) ? plagiarismSources : [],
+          })
+        ),
         source: {
           scanId: cached.scan?.scanId,
           status: cached.scan?.status,
@@ -78,12 +110,9 @@ export async function POST(req) {
     }
 
     // 2) Need scan → enqueue + return 202
-    // ✅ IMPORTANT: await if this function is async
     const scan = await enqueueOpportunitiesScan({
       websiteUrl,
       allowSubdomains,
-      // optional: pass cacheKey if your job wants it
-      cacheKey,
     });
 
     return NextResponse.json(

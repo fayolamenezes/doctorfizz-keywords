@@ -50,6 +50,20 @@ export async function POST(req) {
     cacheSet(`bootstrap:${cacheKey}`, payload);
     return NextResponse.json(payload);
   } catch (e) {
-    return NextResponse.json({ error: e?.message || "Bootstrap error" }, { status: 500 });
+    // Perplexity / upstream fetches may be aborted in dev (Fast Refresh / server restart) or by timeouts.
+    // Treat AbortError as a retriable timeout instead of an internal server error.
+    const msg = String(e?.message || "");
+    const name = String(e?.name || "");
+
+    if (name === "AbortError" || /aborted/i.test(msg)) {
+      console.warn("[onboarding/bootstrap] upstream request aborted:", e);
+      return NextResponse.json(
+        { error: "Upstream request timed out. Please retry." },
+        { status: 504 }
+      );
+    }
+
+    console.error("[onboarding/bootstrap] failed:", e);
+    return NextResponse.json({ error: msg || "Bootstrap error" }, { status: 500 });
   }
 }

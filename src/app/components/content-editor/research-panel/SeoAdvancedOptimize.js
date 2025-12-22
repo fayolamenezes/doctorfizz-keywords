@@ -1,3 +1,4 @@
+// src/components/content-editor/research-panel/SeoAdvancedOptimize.js
 "use client";
 
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -133,6 +134,48 @@ function normalizePlain(htmlLike) {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+// For Perplexity prompt (keeps case)
+function htmlToText(htmlLike) {
+  return String(htmlLike || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function safeString(x) {
+  return String(x ?? "").trim();
+}
+
+function normalizePhraseKey(s) {
+  return safeString(s).toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function getPageContext(seoData) {
+  if (!seoData) return { url: "", title: "" };
+
+  const url =
+    safeString(seoData.url) ||
+    safeString(seoData.pageUrl) ||
+    safeString(seoData.finalUrl) ||
+    safeString(seoData?.psi?.url) ||
+    safeString(seoData?.input?.url) ||
+    safeString(seoData?.metadata?.url) ||
+    "";
+
+  const title =
+    safeString(seoData.title) ||
+    safeString(seoData.pageTitle) ||
+    safeString(seoData?.metadata?.title) ||
+    safeString(seoData?.psi?.title) ||
+    "";
+
+  return { url, title };
 }
 
 /* ===========================
@@ -446,21 +489,14 @@ function deriveKeywordsFromSeoData(seoData) {
     });
   };
 
-  // Candidate rows from unified /api/seo payload
   const rows = [];
 
-  if (Array.isArray(seoData.seoRows)) {
-    rows.push(...seoData.seoRows);
-  }
+  if (Array.isArray(seoData.seoRows)) rows.push(...seoData.seoRows);
 
   const dfs = seoData.dataForSeo;
   if (dfs) {
-    if (Array.isArray(dfs.topKeywords)) {
-      rows.push(...dfs.topKeywords);
-    }
-    if (Array.isArray(dfs.keywordOpportunities)) {
-      rows.push(...dfs.keywordOpportunities);
-    }
+    if (Array.isArray(dfs.topKeywords)) rows.push(...dfs.topKeywords);
+    if (Array.isArray(dfs.keywordOpportunities)) rows.push(...dfs.keywordOpportunities);
   }
 
   rows.forEach((row) => {
@@ -504,11 +540,7 @@ function deriveKeywordsFromSeoData(seoData) {
 
     const links =
       typeof linksArray[0] === "string"
-        ? linksArray.map((u) => ({
-            url: u,
-            title: u,
-            snippet: "",
-          }))
+        ? linksArray.map((u) => ({ url: u, title: u, snippet: "" }))
         : linksArray.map((ex) => ({
             url: ex.url || ex.link || "",
             title: ex.title || ex.url || title,
@@ -517,10 +549,82 @@ function deriveKeywordsFromSeoData(seoData) {
 
     const type =
       row.type ||
-      (title.split(/\s+/).length > 2 ? "Long Tail" : "All Topics");
+      (String(title).split(/\s+/).length > 2 ? "Long Tail" : "All Topics");
 
     push(title, { used, recommended, sources, type, links });
   });
+
+  return out;
+}
+
+/* ===========================
+   NEW: convert Perplexity keywords into Optimize row format
+   - supports both string keywords and object keywords
+   =========================== */
+
+function coercePxKeywordObjects(pxKeywords) {
+  const arr = Array.isArray(pxKeywords) ? pxKeywords : [];
+
+  // If server returns keyword objects: [{ phrase, links, sourcesCount }]
+  if (arr.length && typeof arr[0] === "object" && arr[0] !== null) {
+    return arr
+      .map((k) => ({
+        phrase: safeString(k.phrase || k.keyword || k.text || k.value || ""),
+        sourcesCount:
+          typeof k.sourcesCount === "number" ? k.sourcesCount : undefined,
+        links: Array.isArray(k.links) ? k.links : [],
+      }))
+      .filter((k) => k.phrase);
+  }
+
+  // If server returns strings: ["kw1","kw2"]
+  return arr
+    .map((s) => ({ phrase: safeString(s), links: [], sourcesCount: undefined }))
+    .filter((k) => k.phrase);
+}
+
+function buildPerplexityRows(pxKeywords) {
+  const items = coercePxKeywordObjects(pxKeywords);
+
+  const out = [];
+  const seen = new Set();
+
+  for (const item of items) {
+    const title = item.phrase;
+    const key = normalizePhraseKey(title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+
+    const links = (item.links || [])
+      .map((l) => ({
+        url: safeString(l.url || l.link || ""),
+        title: safeString(l.title || l.pageTitle || l.url || title),
+        snippet: safeString(l.snippet || l.description || ""),
+      }))
+      .filter((l) => l.url);
+
+    const sourcesCount =
+      typeof item.sourcesCount === "number"
+        ? item.sourcesCount
+        : links.length;
+
+    const type = title.split(/\s+/).filter(Boolean).length > 2 ? "Long Tail" : "All Topics";
+
+    out.push({
+      id: `px:${key}`,
+      title,
+      used: 0,
+      recommended: 3,
+      // ✅ IMPORTANT: sources is NUMERIC like before (not "Perplexity")
+      sources: sourcesCount || 0,
+      type,
+      mine: 0,
+      avg: 3,
+      results: links.length || sourcesCount || 1,
+      // ✅ IMPORTANT: links exist so drawer shows the cards
+      links,
+    });
+  }
 
   return out;
 }
@@ -531,13 +635,12 @@ function deriveKeywordsFromSeoData(seoData) {
 
 export default function SeoAdvancedOptimize({
   onPasteToEditor,
-  optimizeData, // kept for compatibility but no longer used as primary source
-  currentPage, // unused but kept for API compatibility
+  optimizeData, // kept for compatibility
+  currentPage, // kept for compatibility
   basicsData, // optional
   editorContent = "", // live HTML from Canvas
-  seoData, // unified SEO data from /api/seo (psi + dataforseo + serper + authority)
+  seoData, // unified SEO data from /api/seo
 }) {
-  // KPI strip (static demo for now)
   const KPIS = [
     { label: "HEADINGS", value: 2, delta: 29, up: false },
     { label: "LINKS", value: 5, delta: 29, up: false },
@@ -545,13 +648,108 @@ export default function SeoAdvancedOptimize({
   ];
 
   /* ===========================
-     Base dataset (from seoData only)
+     Perplexity page-keywords fetch
      =========================== */
+
+  const pageCtx = useMemo(() => getPageContext(seoData), [seoData]);
+  const promptText = useMemo(() => htmlToText(editorContent), [editorContent]);
+
+  const [pxKeywords, setPxKeywords] = useState([]); // can be string[] or object[]
+  const [pxLoading, setPxLoading] = useState(false);
+  const [pxError, setPxError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    const controller = new AbortController();
+
+    const url = pageCtx.url;
+    const title = pageCtx.title;
+
+    const hasSomeContext = Boolean(url || title || promptText);
+    const hasEnoughText = promptText && promptText.length >= 120;
+
+    if (!hasSomeContext || !hasEnoughText) {
+      setPxKeywords([]);
+      setPxError("");
+      setPxLoading(false);
+      return () => controller.abort();
+    }
+
+    (async () => {
+      try {
+        setPxLoading(true);
+        setPxError("");
+
+        // change cache key when url/title/content length changes
+        const cacheKey = `opt:${normalizePhraseKey(url || title)}:${promptText.length}`;
+
+        const res = await fetch("/api/keywords/page-suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            url,
+            title,
+            contentText: promptText,
+            cacheKey,
+            // optional steering:
+            // industry: basicsData?.industry,
+            // location: basicsData?.location,
+          }),
+        });
+
+        if (!res.ok) {
+          const msg = await res.text().catch(() => "");
+          throw new Error(msg || `Perplexity page-suggest failed (${res.status})`);
+        }
+
+        const json = await res.json().catch(() => ({}));
+
+        // ✅ supports both formats:
+        // - keywords: string[]
+        // - keywords: [{ phrase, links, sourcesCount }]
+        const list = Array.isArray(json?.keywords) ? json.keywords : [];
+
+        if (!mounted) return;
+        setPxKeywords(list);
+      } catch (e) {
+        if (!mounted) return;
+        if (e?.name === "AbortError") return;
+        setPxKeywords([]);
+        setPxError(e?.message || "Failed to fetch Perplexity keywords");
+      } finally {
+        if (!mounted) return;
+        setPxLoading(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, [pageCtx.url, pageCtx.title, promptText]);
+
+  /* ===========================
+     Merge dataset: (SEO rows) + (Perplexity rows with sources/links)
+     =========================== */
+
   const keywords = useMemo(() => {
-    // API-first: derive everything from /api/seo
-    const derived = deriveKeywordsFromSeoData(seoData || {});
-    return derived.slice(0, 999);
-  }, [seoData]);
+    const seoRows = deriveKeywordsFromSeoData(seoData || {});
+    const pxRows = buildPerplexityRows(pxKeywords);
+
+    // merge + dedupe by phrase (prefer SEO rows if duplicate)
+    const seen = new Set(seoRows.map((r) => normalizePhraseKey(r.title)));
+    const merged = [...seoRows];
+
+    for (const r of pxRows) {
+      const key = normalizePhraseKey(r.title);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(r);
+    }
+
+    return merged.slice(0, 999);
+  }, [seoData, pxKeywords]);
 
   /* ===========================
      LIVE counts from Canvas
@@ -573,11 +771,7 @@ export default function SeoAdvancedOptimize({
     if (!Array.isArray(keywords)) return [];
     return keywords.map((k) => {
       const used = liveCounts[k.id] ?? 0;
-      return {
-        ...k,
-        used,
-        mine: used,
-      };
+      return { ...k, used, mine: used };
     });
   }, [keywords, liveCounts]);
 
@@ -593,26 +787,21 @@ export default function SeoAdvancedOptimize({
         return {
           phrase: String(k.title || ""),
           status,
-          className:
-            HIGHLIGHT_CLASS_MAP[status] || HIGHLIGHT_CLASS_MAP["Topic Gap"],
+          className: HIGHLIGHT_CLASS_MAP[status] || HIGHLIGHT_CLASS_MAP["Topic Gap"],
         };
       });
 
-    window.dispatchEvent(
-      new CustomEvent("ce:highlightRules", { detail: rules })
-    );
+    window.dispatchEvent(new CustomEvent("ce:highlightRules", { detail: rules }));
   }, [liveKeywords]);
 
   // keep drawer "selected" row in sync when counts change
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selected, setSelected] = useState(null);
+
   useEffect(() => {
     if (!drawerOpen || !selected) return;
     const fresher = liveKeywords.find((it) => it.id === selected.id);
-    if (
-      fresher &&
-      (fresher.used !== selected.used || fresher.mine !== selected.mine)
-    ) {
+    if (fresher && (fresher.used !== selected.used || fresher.mine !== selected.mine)) {
       setSelected(fresher);
     }
   }, [drawerOpen, selected, liveKeywords]);
@@ -633,25 +822,16 @@ export default function SeoAdvancedOptimize({
   const STATUS_OPTIONS = [
     { value: "All", label: "All", dot: STATUS_STYLES.All.dot },
     { value: "Completed", label: "Completed", dot: STATUS_STYLES.Completed.dot },
-    {
-      value: "In Progress",
-      label: "In Progress",
-      dot: STATUS_STYLES["In Progress"].dot,
-    },
+    { value: "In Progress", label: "In Progress", dot: STATUS_STYLES["In Progress"].dot },
     { value: "Overuse", label: "Overuse", dot: STATUS_STYLES.Overuse.dot },
-    {
-      value: "Topic Gap",
-      label: "Topic Gap",
-      dot: STATUS_STYLES["Topic Gap"].dot,
-    },
+    { value: "Topic Gap", label: "Topic Gap", dot: STATUS_STYLES["Topic Gap"].dot },
   ];
 
   const visible = useMemo(() => {
     const q = kwFilter.trim().toLowerCase();
     return liveKeywords.filter((k) => {
       const okText = !q || k.title.toLowerCase().includes(q);
-      const okType =
-        typeFilter === "All Topics" || !typeFilter || k.type === typeFilter;
+      const okType = typeFilter === "All Topics" || !typeFilter || k.type === typeFilter;
       const status = deriveStatus(k.used, k.recommended);
       const okStatus = statusFilter === "All" || status === statusFilter;
       return okText && okType && okStatus;
@@ -664,7 +844,6 @@ export default function SeoAdvancedOptimize({
 
   return (
     <>
-      {/* KPI strip */}
       {!drawerOpen && (
         <div className="mt-1 grid grid-cols-3 gap-2">
           {KPIS.map((k) => (
@@ -673,7 +852,17 @@ export default function SeoAdvancedOptimize({
         </div>
       )}
 
-      {/* Filter row */}
+      {/* subtle fetch status (optional; remove if you want) */}
+      {!drawerOpen && (
+        <div className="mt-2 text-[11px] text-gray-500 dark:text-[var(--muted)]">
+          {pxLoading
+            ? "Fetching page-specific keywords…"
+            : pxError
+            ? `Keyword fetch failed: ${pxError}`
+            : ""}
+        </div>
+      )}
+
       {!drawerOpen && (
         <div className="mt-3 grid grid-cols-[1fr_auto_auto_auto] gap-2 items-end">
           <div className="relative">
@@ -690,18 +879,8 @@ export default function SeoAdvancedOptimize({
             />
           </div>
 
-          <PopoverSelect
-            label="Type"
-            value={typeFilter}
-            onChange={setTypeFilter}
-            options={TYPE_OPTIONS}
-          />
-          <PopoverSelect
-            label="Status"
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={STATUS_OPTIONS}
-          />
+          <PopoverSelect label="Type" value={typeFilter} onChange={setTypeFilter} options={TYPE_OPTIONS} />
+          <PopoverSelect label="Status" value={statusFilter} onChange={setStatusFilter} options={STATUS_OPTIONS} />
 
           <div className="flex items-end gap-2">
             <button
@@ -723,7 +902,6 @@ export default function SeoAdvancedOptimize({
         </div>
       )}
 
-      {/* List */}
       {!drawerOpen && (
         <div className="mt-3 space-y-2">
           {visible.map((item) => (
@@ -745,24 +923,17 @@ export default function SeoAdvancedOptimize({
         </div>
       )}
 
-      {/* Drawer (row details) */}
       {drawerOpen && selected && (
         <div className="mt-1 rounded-2xl border border-gray-200 bg-white p-3 dark:border-[var(--border)] dark:bg-[var(--bg-panel)]">
           <DrawerHeader
             title={selected.title}
-            countText={`${selected.sources} Search result${
-              selected.sources === 1 ? "" : "s"
-            } mention this topic`}
+            countText={`${selected.sources} Search result${selected.sources === 1 ? "" : "s"} mention this topic`}
             onClose={() => {
               setDrawerOpen(false);
               setSelected(null);
             }}
           />
-          <StatTriplet
-            mine={selected.mine}
-            avg={selected.avg}
-            results={selected.results}
-          />
+          <StatTriplet mine={selected.mine} avg={selected.avg} results={selected.results} />
           <div className="mt-3 space-y-2">
             {(selected.links || []).map((l, i) => (
               <SourceResult
@@ -773,6 +944,11 @@ export default function SeoAdvancedOptimize({
                 phrase={selected.title}
               />
             ))}
+            {(selected.links || []).length === 0 && (
+              <div className="text-[12px] text-gray-500 dark:text-[var(--muted)]">
+                No sources available for this keyword yet.
+              </div>
+            )}
           </div>
         </div>
       )}

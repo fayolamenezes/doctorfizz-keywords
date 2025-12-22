@@ -37,9 +37,7 @@ const STORAGE_DOMAIN_KEYS = [
 
 const normalizeDomain = (input = "") => {
   try {
-    const url = input.includes("://")
-      ? new URL(input)
-      : new URL(`https://${input}`);
+    const url = input.includes("://") ? new URL(input) : new URL(`https://${input}`);
     let host = url.hostname.toLowerCase();
     if (host.startsWith("www.")) host = host.slice(4);
     return host;
@@ -107,14 +105,14 @@ const toWebsiteUrl = (domain) => {
   return `https://${d}`;
 };
 
-// ✅ NEW: normalize any url value so the editor+SEO pipeline can crawl it reliably
+// ✅ normalize any url value so the editor+SEO pipeline can crawl it reliably
 const ensureHttpUrl = (input) => {
   const raw = String(input || "").trim();
   if (!raw) return "";
   return raw.includes("://") ? raw : `https://${raw}`;
 };
 
-// ✅ NEW: if API doesn't send url, build one from domain + slug
+// ✅ if API doesn't send url, build one from domain + slug
 const buildUrlFromDomainAndSlug = (domain, slug) => {
   const d = normalizeDomain(domain || "");
   if (!d) return "";
@@ -138,6 +136,10 @@ const scoreFromWordCount = (wordCount) => {
 /**
  * Convert API result item -> the slot object your existing UI expects.
  * (Keep fields that your Start flow uses: title, content, primaryKeyword, lsiKeywords, etc.)
+ *
+ * ✅ CHANGE:
+ * - If API returns `contentHtml`, we put it directly into `content` so editor opens instantly.
+ * - If not present, it stays "" and editor hydrates via /api/seo as before.
  */
 function mapApiItemToSlot(item, fallbackTitle, domain) {
   const title = item?.title || fallbackTitle || "Untitled";
@@ -154,12 +156,17 @@ function mapApiItemToSlot(item, fallbackTitle, domain) {
     keywords: estimateKeywords(wc),
     score: scoreFromWordCount(wc),
     status: item?.isDraft ? "Draft" : "Published",
-    content: "", // editor will hydrate via /api/seo -> content.html / rawText
+
+    // ✅ NEW: prefer cached contentHtml if present
+    content: typeof item?.contentHtml === "string" ? item.contentHtml : "",
+
     slug,
 
     primaryKeyword: null,
     lsiKeywords: [],
-    plagiarism: null,
+    plagiarism: typeof item?.plagiarism === "number" ? item.plagiarism : null,
+    plagiarismSources: Array.isArray(item?.plagiarismSources) ? item.plagiarismSources : [],
+    plagiarismCheckedAt: item?.plagiarismCheckedAt || null,
     searchVolume: null,
     keywordDifficulty: null,
 
@@ -186,15 +193,41 @@ function pickTopPublishedAndDraft(items = []) {
 }
 
 /* ============================================================
+   ✅ NEW: Client-side cache to avoid refetch/flicker on remount
+   - When you open ContentEditor and come back, this component
+     mounts again and would refetch. This cache makes it instant.
+============================================================ */
+
+const OPPS_CLIENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // keep aligned with server TTL
+
+const oppsCacheKey = (domain) => `drfizz.opps.v1:${normalizeDomain(domain || "")}`;
+
+function readOppsCache(domain) {
+  try {
+    const raw = sessionStorage.getItem(oppsCacheKey(domain));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || !parsed?.seoRows) return null;
+
+    const age = Date.now() - Number(parsed.ts || 0);
+    if (age > OPPS_CLIENT_CACHE_TTL_MS) return null;
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeOppsCache(domain, payload) {
+  try {
+    sessionStorage.setItem(oppsCacheKey(domain), JSON.stringify(payload));
+  } catch {}
+}
+
+/* ============================================================
    Start Modal
 ============================================================ */
-function StartModal({
-  open,
-  onClose,
-  onCreateFromScratch,
-  onEditExisting,
-  onCreateWithStyle,
-}) {
+function StartModal({ open, onClose, onCreateFromScratch, onEditExisting, onCreateWithStyle }) {
   const STYLES = [
     {
       id: "wander",
@@ -252,9 +285,7 @@ function StartModal({
               OPTIMIZE &<br />
               PUBLISH
             </div>
-            <div className="mt-2 text-[13px] text-[#9CA3AF]">
-              No tab-hopping required.
-            </div>
+            <div className="mt-2 text-[13px] text-[#9CA3AF]">No tab-hopping required.</div>
           </div>
         </div>
 
@@ -272,9 +303,7 @@ function StartModal({
               OPTIMIZE &<br />
               PUBLISH
             </div>
-            <div className="mt-4 text-[15px] text-[#6B7280]">
-              No tab-hopping required.
-            </div>
+            <div className="mt-4 text-[15px] text-[#6B7280]">No tab-hopping required.</div>
           </div>
         </div>
 
@@ -282,19 +311,14 @@ function StartModal({
         <div className="flex h-full min-h-0 flex-col bg-[#FAFAFA]">
           {/* Mobile header + helper panel */}
           <div className="md:hidden px-6">
-            <div className="text-[16px] font-semibold text-[#0F172A]">
-              Blogs
-            </div>
+            <div className="text-[16px] font-semibold text-[#0F172A]">Blogs</div>
             <p className="mt-2 text-[13px] leading-relaxed text-[#6B7280]">
-              Explore the latest article &amp; stay updated with latest trend
-              &amp; insights in the industry
+              Explore the latest article &amp; stay updated with latest trend &amp; insights in the industry
             </p>
 
             <div className="mt-4 rounded-2xl bg-[#F5F5F5] px-4 pt-3 pb-2 border border-[#ECECEC]">
               <div className="text-[12px] text-[#9CA3AF]">
-                Select any{" "}
-                <span className="font-medium text-[#6B7280]">1 style</span> to
-                proceed
+                Select any <span className="font-medium text-[#6B7280]">1 style</span> to proceed
               </div>
               <div className="mt-2 border-t border-[#E5E7EB]" />
             </div>
@@ -303,9 +327,7 @@ function StartModal({
           {/* Desktop header */}
           <div className="hidden md:flex flex-col p-6">
             <div className="text-xl font-semibold text-[#0F172A]">Blogs</div>
-            <div className="mt-1 text-[12px] text-[#6B7280]">
-              Select any 1 to create with that style
-            </div>
+            <div className="mt-1 text-[12px] text-[#6B7280]">Select any 1 to create with that style</div>
           </div>
 
           {/* Scrollable list area */}
@@ -326,19 +348,13 @@ function StartModal({
                     w-full rounded-2xl p-4 text-left transition
                     bg-white border border-[#EFEFEF] shadow-[0_2px_10px_rgba(0,0,0,0.06)]
                     flex items-center justify-between
-                    ${
-                      hover === s.id
-                        ? "ring-1 ring-black/5"
-                        : "hover:ring-1 hover:ring-black/5"
-                    }
+                    ${hover === s.id ? "ring-1 ring-black/5" : "hover:ring-1 hover:ring-black/5"}
                   `}
                   aria-pressed={hover === s.id}
                   title="Click to create a new blog with this style"
                 >
                   <div className="pr-3">
-                    <div className="font-semibold text-[15px] text-[#0F172A]">
-                      {s.title}
-                    </div>
+                    <div className="font-semibold text-[15px] text-[#0F172A]">{s.title}</div>
                     <div className="mt-1 max-w-[380px] text-[12px] leading-relaxed text-[#6B7280]">
                       {s.desc}
                     </div>
@@ -354,10 +370,7 @@ function StartModal({
 
           {/* Sticky footer */}
           <div className="sticky bottom-0 left-0 right-0 bg-white border-t border-[#E5E7EB] px-6 py-4 flex items-center justify-between gap-3">
-            <button
-              onClick={onCreateFromScratch}
-              className="text-[13px] font-medium text-[#F97316]"
-            >
+            <button onClick={onCreateFromScratch} className="text-[13px] font-medium text-[#F97316]">
               Create from scratch
             </button>
             <button
@@ -429,10 +442,9 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
       pollTimerRef.current = setInterval(async () => {
         try {
-          const res = await fetch(
-            `/api/seo/scan/status?scanId=${encodeURIComponent(id)}`,
-            { method: "GET" }
-          );
+          const res = await fetch(`/api/seo/scan/status?scanId=${encodeURIComponent(id)}`, {
+            method: "GET",
+          });
           const json = await res.json().catch(() => ({}));
           if (!res.ok) return;
 
@@ -442,9 +454,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
             onComplete?.();
           } else if (status === "failed") {
             stopPolling();
-            setOppsError(
-              json?.diagnostics?.error || "SEO scan failed. Please retry."
-            );
+            setOppsError(json?.diagnostics?.error || "SEO scan failed. Please retry.");
             setLoadingOpps(false);
           }
         } catch {
@@ -457,8 +467,8 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
   /**
    * Load opportunities:
-   * - If 200: use data
-   * - If 202: store scanId, poll scan status, then refetch on complete
+   * - Hydrate instantly from sessionStorage cache (no flicker)
+   * - Then fetch only if needed (or if scan still running)
    */
   useEffect(() => {
     let alive = true;
@@ -480,12 +490,32 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
       };
     };
 
+    // ✅ 1) Instant hydration from client cache (prevents refetch flicker on remount)
+    const cachedClient = readOppsCache(domain);
+    if (cachedClient?.seoRows && alive) {
+      setSeoRows(cachedClient.seoRows);
+      setMultiRows(null);
+      setScanId(cachedClient.scanId || "");
+      setOppsError("");
+      // NOTE: do NOT set loading here; we want instant UI
+    }
+
     const load = async ({ refetchAfterScan = false } = {}) => {
       const d = normalizeDomain(domain);
       if (!d || d === "example.com") return;
 
-      setLoadingOpps(true);
-      setOppsError("");
+      // ✅ If we already have a fresh COMPLETE client cache, skip fetch entirely
+      const cc = readOppsCache(d);
+      if (cc?.seoRows && cc?.status === "complete") {
+        if (alive) setLoadingOpps(false);
+        return;
+      }
+
+      // ✅ If we already have rows on screen, keep them while loading (no placeholders)
+      if (alive) {
+        setLoadingOpps(true);
+        setOppsError("");
+      }
 
       try {
         const websiteUrl = toWebsiteUrl(d);
@@ -503,10 +533,13 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
           const id = json?.source?.scanId || "";
           if (alive) {
             setScanId(id);
-            if (!seoRows) {
-              setSeoRows(null);
-              setMultiRows(null);
-            }
+            // ✅ do NOT wipe seoRows here. keep showing cached rows if any.
+            writeOppsCache(d, {
+              ts: Date.now(),
+              status: "running",
+              scanId: id,
+              seoRows: seoRows || cachedClient?.seoRows || null,
+            });
           }
 
           startPolling(id, {
@@ -531,11 +564,19 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
           setMultiRows(null);
           setScanId(json?.source?.scanId || "");
           stopPolling();
+
+          // ✅ cache for instant return after ContentEditor back
+          writeOppsCache(d, {
+            ts: Date.now(),
+            status: "complete",
+            scanId: json?.source?.scanId || "",
+            seoRows: [row],
+          });
         }
       } catch (e) {
         if (alive) {
           setOppsError(e?.message || "Failed to load opportunities");
-          if (!refetchAfterScan) {
+          if (!refetchAfterScan && !seoRows && !cachedClient?.seoRows) {
             setSeoRows(null);
             setMultiRows(null);
           }
@@ -583,14 +624,12 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
   // Merge slots: metrics from seo-data, content/title + SEO fields from multi-content when available
   const mergeSlot = (seoSlot, multiSlot, fallbackTitle) => {
-    const title =
-      multiSlot?.title || seoSlot?.title || fallbackTitle || "Untitled";
+    const title = multiSlot?.title || seoSlot?.title || fallbackTitle || "Untitled";
     const content = multiSlot?.content || seoSlot?.content || "";
 
     if (!seoSlot && !multiSlot) return {};
 
-    const primaryKeyword =
-      multiSlot?.primaryKeyword ?? seoSlot?.primaryKeyword ?? null;
+    const primaryKeyword = multiSlot?.primaryKeyword ?? seoSlot?.primaryKeyword ?? null;
     const lsiKeywords =
       (Array.isArray(multiSlot?.lsiKeywords) && multiSlot.lsiKeywords.length
         ? multiSlot.lsiKeywords
@@ -603,6 +642,16 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
         : typeof seoSlot?.plagiarism === "number"
         ? seoSlot.plagiarism
         : null;
+
+    const plagiarismSources =
+      Array.isArray(multiSlot?.plagiarismSources) && multiSlot.plagiarismSources.length
+        ? multiSlot.plagiarismSources
+        : Array.isArray(seoSlot?.plagiarismSources)
+        ? seoSlot.plagiarismSources
+        : [];
+
+    const plagiarismCheckedAt =
+      multiSlot?.plagiarismCheckedAt || seoSlot?.plagiarismCheckedAt || null;
 
     const searchVolume =
       typeof multiSlot?.searchVolume === "number"
@@ -619,15 +668,11 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
         : null;
 
     const baseTitle = multiSlot?.title || seoSlot?.title || fallbackTitle;
-    const slug =
-      multiSlot?.slug ||
-      seoSlot?.slug ||
-      (baseTitle ? slugify(baseTitle) : undefined);
+    const slug = multiSlot?.slug || seoSlot?.slug || (baseTitle ? slugify(baseTitle) : undefined);
 
     // ✅ make sure URL is always present so editor can crawl and extract content
     const url =
-      ensureHttpUrl(multiSlot?.url || seoSlot?.url || "") ||
-      buildUrlFromDomainAndSlug(domain, slug);
+      ensureHttpUrl(multiSlot?.url || seoSlot?.url || "") || buildUrlFromDomainAndSlug(domain, slug);
 
     return {
       ...seoSlot,
@@ -637,6 +682,8 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
       primaryKeyword,
       lsiKeywords,
       plagiarism,
+      plagiarismSources,
+      plagiarismCheckedAt,
       searchVolume,
       keywordDifficulty,
       slug,
@@ -692,9 +739,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
   const dispatchOpen = (payload) => {
     try {
-      window.dispatchEvent(
-        new CustomEvent("content-editor:open", { detail: payload })
-      );
+      window.dispatchEvent(new CustomEvent("content-editor:open", { detail: payload }));
     } catch {}
     onOpenContentEditor?.(payload);
   };
@@ -707,8 +752,8 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
     }
 
     // ✅ IMPORTANT:
-    // We intentionally pass content="" and let ContentEditor hydrate from /api/seo
-    // using the url that we pass here.
+    // If content is available (cached contentHtml), pass it for instant open.
+    // If it's empty, ContentEditor can still hydrate via /api/seo using `url`.
     dispatchOpen({
       title: real.title,
       slug: real.slug || (real.title ? slugify(real.title) : undefined),
@@ -720,12 +765,10 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
       primaryKeyword: real.primaryKeyword || null,
       lsiKeywords: real.lsiKeywords || [],
       plagiarism: typeof real.plagiarism === "number" ? real.plagiarism : null,
-      searchVolume:
-        typeof real.searchVolume === "number" ? real.searchVolume : null,
-      keywordDifficulty:
-        typeof real.keywordDifficulty === "number"
-          ? real.keywordDifficulty
-          : null,
+      plagiarismSources: Array.isArray(real.plagiarismSources) ? real.plagiarismSources : [],
+      sourceHtml: real.content || "", // ✅ imported/source HTML for initial similarity/plagiarism workflows
+      searchVolume: typeof real.searchVolume === "number" ? real.searchVolume : null,
+      keywordDifficulty: typeof real.keywordDifficulty === "number" ? real.keywordDifficulty : null,
     });
 
     setStartOpen(false);
@@ -803,10 +846,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
           color: cfg.txt,
         }}
       >
-        <span
-          className="h-2.5 w-2.5 rounded-full"
-          style={{ backgroundColor: cfg.dot }}
-        />
+        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: cfg.dot }} />
         {cfg.label}
       </span>
     );
@@ -822,9 +862,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
     // prefer realTitle (from multi-content/seo-data) first
     const displayTitle =
-      realTitle ||
-      GENERIC_CARD_TITLES[index % GENERIC_CARD_TITLES.length] ||
-      "SEO Opportunity";
+      realTitle || GENERIC_CARD_TITLES[index % GENERIC_CARD_TITLES.length] || "SEO Opportunity";
 
     return (
       <div className="relative rounded-[18px] border border-[var(--border)] bg-[var(--input)] p-4 shadow-sm">
@@ -835,9 +873,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
         </div>
 
         <div className="pr-14">
-          <h3 className="text-[20px] font-semibold leading-snug text-[var(--text)]">
-            {displayTitle}
-          </h3>
+          <h3 className="text-[20px] font-semibold leading-snug text-[var(--text)]">{displayTitle}</h3>
         </div>
 
         <hr className="mt-3 border-t border-[var(--border)]" />
@@ -845,11 +881,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
         <div className="mt-3 flex items-center gap-2">
           <PriorityBadge score={score} />
           <span className="inline-flex items-center gap-2 rounded-[10px] border border-[var(--border)] bg-[#F6F8FB] px-2.5 py-1 text-[12px] text-[var(--muted)]">
-            {status === "Published" ? (
-              <Check size={14} />
-            ) : (
-              <PencilLine size={14} />
-            )}
+            {status === "Published" ? <Check size={14} /> : <PencilLine size={14} />}
             {status}
           </span>
         </div>
@@ -879,34 +911,30 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
           <button
             onClick={() => {
               const titleForSlug = realTitle || displayTitle;
-              const slug =
-                data?.slug || (titleForSlug ? slugify(titleForSlug) : undefined);
+              const slug = data?.slug || (titleForSlug ? slugify(titleForSlug) : undefined);
 
               // ✅ ensure URL is always stored so editor can crawl + extract
-              const url =
-                ensureHttpUrl(data?.url || "") ||
-                buildUrlFromDomainAndSlug(domain, slug);
+              const url = ensureHttpUrl(data?.url || "") || buildUrlFromDomainAndSlug(domain, slug);
 
               startPayloadRef.current = {
                 kind: type, // "blog" or "page"
                 title: realTitle || displayTitle,
                 slug,
+
+                // ✅ IMPORTANT: if we already have cached contentHtml, pass it through
                 content: data?.content || "",
+
                 domain,
                 url,
 
                 primaryKeyword: data?.primaryKeyword || null,
                 lsiKeywords: data?.lsiKeywords || [],
-                plagiarism:
-                  typeof data?.plagiarism === "number" ? data.plagiarism : null,
-                searchVolume:
-                  typeof data?.searchVolume === "number"
-                    ? data.searchVolume
-                    : null,
+                plagiarism: typeof data?.plagiarism === "number" ? data.plagiarism : null,
+                plagiarismSources: Array.isArray(data?.plagiarismSources) ? data.plagiarismSources : [],
+                plagiarismCheckedAt: data?.plagiarismCheckedAt || null,
+                searchVolume: typeof data?.searchVolume === "number" ? data.searchVolume : null,
                 keywordDifficulty:
-                  typeof data?.keywordDifficulty === "number"
-                    ? data.keywordDifficulty
-                    : null,
+                  typeof data?.keywordDifficulty === "number" ? data.keywordDifficulty : null,
               };
               setStartOpen(true);
             }}
@@ -923,25 +951,17 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
      UI — Opportunities grid + Start modal
   ============================================================ */
 
-  const loadingMsg = scanId
-    ? "Scanning site… (building opportunities)"
-    : "Loading opportunities from sitemap / crawl…";
+  const loadingMsg = scanId ? "Scanning site… (building opportunities)" : "Loading opportunities from sitemap / crawl…";
 
   return (
     <>
-      <h2 className="mb-3 ml-1 text-[16px] font-bold text-[var(--text)]">
-        Top On-Page Content Opportunities
-      </h2>
+      <h2 className="mb-3 ml-1 text-[16px] font-bold text-[var(--text)]">Top On-Page Content Opportunities</h2>
 
       {/* Optional: show loading/error without changing layout */}
       {loadingOpps ? (
-        <div className="mb-3 ml-1 text-[12px] text-[var(--muted)]">
-          {loadingMsg}
-        </div>
+        <div className="mb-3 ml-1 text-[12px] text-[var(--muted)]">{loadingMsg}</div>
       ) : null}
-      {oppsError ? (
-        <div className="mb-3 ml-1 text-[12px] text-red-500">{oppsError}</div>
-      ) : null}
+      {oppsError ? <div className="mb-3 ml-1 text-[12px] text-red-500">{oppsError}</div> : null}
 
       <section className="mb-10 grid grid-cols-1 gap-5 lg:grid-cols-2">
         <div className="rounded-[16px] border border-[var(--border)] bg-[var(--input)] p-4">

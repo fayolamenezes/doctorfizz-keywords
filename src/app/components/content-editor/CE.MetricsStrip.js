@@ -38,7 +38,7 @@ const pctText = (n, digits = 0) =>
 
 /** Status helper with optional inversion (for metrics where lower is better, e.g., Plagiarism) */
 function getStatus(pct, { invert = false } = {}) {
-  const v = invert ? 100 - (pct || 0) : (pct || 0);
+  const v = invert ? 100 - (pct || 0) : pct || 0;
   if (v >= 75) return { label: "Good", color: "text-green-600" };
   if (v >= 40) return { label: "Moderate", color: "text-yellow-600" };
   return { label: "Needs Review", color: "text-red-600" };
@@ -55,31 +55,51 @@ function Bar({ pct = 0, tone = "default", className = "" }) {
       : tone === "bad"
       ? "#DC2626"
       : "#CBD5E1";
+
   return (
-    <div className={`mt-1 h-1.5 rounded bg-gray-200 overflow-hidden ${className}`}>
+    <div
+      className={`mt-1 h-2.5 rounded bg-gray-200 border border-gray-300 overflow-hidden ${className}`}
+    >
       <div
         className="h-full rounded transition-all duration-500"
-        style={{ width: `${width}%`, backgroundColor: color }}
+        style={{
+          width: `${width}%`,
+          minWidth: width > 0 ? "2px" : "0px",
+          backgroundColor: color,
+        }}
       />
     </div>
   );
 }
 
 /** Generic metric card (desktop) */
-function MetricCard({ label, valuePct }) {
+function MetricCard({ label, valuePct, rightSlot = null, subLabel = "" }) {
   const invert = label === "PLAGIARISM";
   const anim = useSpringNumber(valuePct ?? 0);
   const status = getStatus(valuePct, { invert });
   const tone =
-    status.label === "Good" ? "good" : status.label === "Moderate" ? "warn" : "bad";
+    status.label === "Good"
+      ? "good"
+      : status.label === "Moderate"
+      ? "warn"
+      : "bad";
 
   return (
     <div className="relative min-w-0 h-[74px] rounded-[12px] border border-[var(--border)] bg-white px-3 py-2 transition-colors">
       <div className="flex h-full flex-col justify-end">
-        <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold tracking-wide text-[var(--text-primary)]">
-          <span className="truncate">{label}</span>
-          <HelpCircle size={13} className="text-[var(--muted)] shrink-0" />
+        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold tracking-wide text-[var(--text-primary)]">
+          <div className="flex items-center gap-1 min-w-0">
+            <span className="truncate">{label}</span>
+            <HelpCircle size={13} className="text-[var(--muted)] shrink-0" />
+          </div>
+          {rightSlot}
         </div>
+
+        {subLabel ? (
+          <div className="mb-1 text-[10px] font-medium text-[var(--muted)] truncate">
+            {subLabel}
+          </div>
+        ) : null}
 
         <div className="mb-1 flex items-center justify-between">
           <div className="text-[14px] font-bold text-[var(--text-primary)]">
@@ -158,7 +178,9 @@ function SeoPill({ active, title, Icon, onClick, disabled }) {
       <div className="flex items-center gap-2">
         <span
           className={`grid place-items-center h-6 w-6 rounded-full border ${
-            active ? "border-orange-300 bg-orange-100" : "border-gray-300 bg-gray-100"
+            active
+              ? "border-orange-300 bg-orange-100"
+              : "border-gray-300 bg-gray-100"
           }`}
         >
           <Icon size={16} className={active ? "text-orange-600" : "text-gray-500"} />
@@ -235,14 +257,7 @@ function SeoPillMobile({ active, title, Icon, onClick, disabled }) {
 }
 
 /** Circular metric (ultra compact, perfectly centered & balanced) */
-function CircularStat({
-  pct = 0,
-  label,
-  ring = "#10B981",
-  alt = false,
-  count,
-  target,
-}) {
+function CircularStat({ pct = 0, label, ring = "#10B981", alt = false, count, target }) {
   const size = 48;
   const stroke = 4;
   const r = (size - stroke) / 2;
@@ -267,14 +282,7 @@ function CircularStat({
   return (
     <div className="flex flex-col items-center">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={r}
-          stroke="#fff"
-          strokeWidth={stroke}
-          fill="#fff"
-        />
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="#fff" strokeWidth={stroke} fill="#fff" />
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -346,9 +354,7 @@ function MiniMetricBadge({ colorClass, bgClass, label, value }) {
       >
         {value}
       </span>
-      <span
-        className={`text-[6px] leading-[1] font-semibold tracking-tight ${colorClass}`}
-      >
+      <span className={`text-[6px] leading-[1] font-semibold tracking-tight ${colorClass}`}>
         {label}
       </span>
     </div>
@@ -363,6 +369,9 @@ export default function CEMetricsStrip({
   onChangeSeoMode,
   /** Gate Advanced/Details until a search has been run in SEO Basics */
   canAccessAdvanced = true,
+  // ✅ NEW: plagiarism refresh wiring
+  plagiarismLoading = false,
+  onRefreshPlagiarism,
 }) {
   const plagPct = metrics?.plagiarism ?? 0;
   const pkPct = metrics?.primaryKeyword ?? 0;
@@ -381,7 +390,27 @@ export default function CEMetricsStrip({
     <div className="mb-4">
       {/* --------------------- DESKTOP (unchanged) --------------------- */}
       <div className="hidden md:grid grid-cols-[1.2fr_1.2fr_1.2fr_1.2fr_.8fr_.8fr_.8fr] gap-2.5 items-stretch">
-        <MetricCard label="PLAGIARISM" valuePct={plagPct} />
+        <MetricCard
+          label="PLAGIARISM"
+          valuePct={plagPct}
+          subLabel={plagiarismLoading ? "Fetching plagiarism…" : ""}
+          rightSlot={
+            <button
+              type="button"
+              onClick={() => onRefreshPlagiarism?.()}
+              disabled={plagiarismLoading}
+              className={[
+                "shrink-0 rounded-full border border-[var(--border)] bg-white px-2 py-1 text-[10px] font-semibold",
+                "text-[var(--muted)] hover:bg-gray-50 transition-colors",
+                plagiarismLoading ? "opacity-60 cursor-not-allowed" : "",
+              ].join(" ")}
+              title="Refresh plagiarism"
+            >
+              {plagiarismLoading ? "…" : "↻"}
+            </button>
+          }
+        />
+
         <MetricCard label="PRIMARY KEYWORD" valuePct={pkPct} />
         <WordcountCard count={wc} target={wcTarget} />
         <MetricCard label="LSI KEYWORDS" valuePct={lsiPct} />
@@ -472,14 +501,13 @@ export default function CEMetricsStrip({
         <div className="grid grid-cols-4 gap-2">
           <CircularStat pct={pkPct} label="PRIMARY KEYWORD" ring="#10B981" />
           <CircularStat pct={plagPct} label="PLAGIARISM" ring="#E11D48" alt />
+          {plagiarismLoading ? (
+            <div className="col-span-4 -mt-1 text-center text-[10px] font-medium text-[var(--muted)]">
+              Fetching plagiarism…
+            </div>
+          ) : null}
           <CircularStat pct={lsiPct} label="LSI KEYWORDS" ring="#F59E0B" />
-          <CircularStat
-            pct={wcPct}
-            label="WORD COUNT"
-            ring="#8B5CF6"
-            count={wc}
-            target={wcTarget}
-          />
+          <CircularStat pct={wcPct} label="WORD COUNT" ring="#8B5CF6" count={wc} target={wcTarget} />
         </div>
       </div>
     </div>

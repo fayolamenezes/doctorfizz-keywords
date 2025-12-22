@@ -471,7 +471,10 @@ export default function Dashboard({ onOpenContentEditor }) {
   // Seed SEO state from any prefetch done in the wizard (Step5Slide2)
   const getInitialSeo = () => {
     if (typeof window !== "undefined" && window.__drfizzSeoPrefetch) {
-      return window.__drfizzSeoPrefetch;
+      const v = window.__drfizzSeoPrefetch;
+      // consume once so it doesn't keep "prefilling" on future remounts
+      window.__drfizzSeoPrefetch = null;
+      return v;
     }
     return null;
   };
@@ -792,31 +795,39 @@ const fallbackSelected = useMemo(() => {
     setDomain(site);
   }, [searchParams]);
 
-  // NEW: Hydrate cached /api/seo response instantly (useful after OAuth redirect / page reload)
-  useEffect(() => {
+  // NEW: Seed cache timestamp on mount; hydrate from cache only if seo state is empty.
+// This prevents a second /api/seo fetch when coming back from Content Editor (Dashboard remount).
+useEffect(() => {
     if (!domain || domain === "example.com") return;
-    if (seo) return; // already have data (wizard prefetch or earlier state)
-
-    // IMPORTANT:
-    // We only hydrate SEO metrics from cache when returning from Google OAuth (we use #dashboard on redirect).
-    // On a normal first visit, we ALWAYS want the first render to be driven by a real /api/seo fetch.
-    const shouldHydrateFromCache =
-      typeof window !== "undefined" && window.location.hash === "#dashboard";
-    if (!shouldHydrateFromCache) return;
 
     const cached = loadSeoCache(domain);
-    if (!cached?.data) return;
 
-    const age = Date.now() - (cached.ts || 0);
-    seoCacheTsRef.current = cached.ts || 0;
-    seoHydratedFromCacheRef.current = true;
+    // Always seed ts so cacheFresh works after remounts even if SEO was prefilled from window.__drfizzSeoPrefetch
+    if (cached?.ts) seoCacheTsRef.current = cached.ts || 0;
+    // If we don't have a session cache entry but SEO is already prefilled (e.g. from window.__drfizzSeoPrefetch),
+    // treat it as "fresh" by seeding cacheTs from seo.dateAnalyzed (or now) and persist to session cache.
+    if ((!cached || !cached.ts) && seo && !seoCacheTsRef.current) {
+      const analyzed = seo?.dateAnalyzed ? Date.parse(seo.dateAnalyzed) : NaN;
+      const ts = Number.isFinite(analyzed) ? analyzed : Date.now();
+      seoCacheTsRef.current = ts;
+      try {
+        saveSeoCache(domain, seo, ts);
+      } catch {
+        // ignore storage failures
+      }
+    }
 
-    // Show cached data immediately (no spinner / no delay)
-    setSeo(cached.data);
-    setSeoLoading(false);
 
-    // Optional: surface to console for debugging
-    console.log(`[Dashboard] Hydrated SEO from session cache (age ${Math.round(age / 1000)}s)`);
+    // Only hydrate UI from cache if we don't already have SEO in state
+    if (!seo && cached?.data) {
+      const age = Date.now() - (cached.ts || 0);
+      seoHydratedFromCacheRef.current = true;
+
+      setSeo(cached.data);
+      setSeoLoading(false);
+
+      console.log(`[Dashboard] Hydrated SEO from session cache (age ${Math.round(age / 1000)}s)`);
+    }
   }, [domain, seo]);
 
   // Fetch unified SEO data from /api/seo whenever domain changes

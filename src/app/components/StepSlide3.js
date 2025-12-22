@@ -13,6 +13,30 @@ export default function StepSlide3({ onNext, onBack, onLanguageLocationSubmit })
   const [openDropdown, setOpenDropdown] = useState(null);
   const [isBootstrapping, setIsBootstrapping] = useState(false);
   const [bootstrapError, setBootstrapError] = useState(null);
+  // Progress bar (0–100) for keyword bootstrap wait time
+  const [progressPct, setProgressPct] = useState(0);
+  const fakeProgressRef = useRef(null);
+
+  const startFakeProgressTo92 = () => {
+    setProgressPct(0);
+    if (fakeProgressRef.current) clearInterval(fakeProgressRef.current);
+
+    // 0 -> 92 in ~25s (matches Step5Slide2)
+    fakeProgressRef.current = setInterval(() => {
+      setProgressPct((p) => {
+        if (p >= 92) return 92;
+        return Math.min(92, p + 0.368);
+      });
+    }, 100);
+  };
+
+  const stopFakeProgress = () => {
+    if (fakeProgressRef.current) {
+      clearInterval(fakeProgressRef.current);
+      fakeProgressRef.current = null;
+    }
+  };
+
 
   const panelRef = useRef(null);
   const scrollRef = useRef(null);
@@ -69,6 +93,12 @@ export default function StepSlide3({ onNext, onBack, onLanguageLocationSubmit })
     };
   }, []);
 
+  // Cleanup fake progress if component unmounts mid-bootstrap
+  useEffect(() => {
+    return () => stopFakeProgress();
+  }, []);
+
+
   useEffect(() => {
     recomputePanelHeight();
   }, [selectedLanguage, selectedCountry, selectedState, selectedCity]);
@@ -124,11 +154,37 @@ export default function StepSlide3({ onNext, onBack, onLanguageLocationSubmit })
     }
   }, [selectedLanguage, selectedCountry, selectedState, selectedCity, openDropdown, selectionsComplete]);
 
+
+  const bootstrapWithRetry = async (payload) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch("/api/onboarding/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) return res;
+
+      const errJson = await res.json().catch(() => ({}));
+      const msg = String(errJson?.error || "");
+
+      // Retry once only for timeout/abort (route returns 504 for aborts)
+      if (attempt === 0 && (res.status === 504 || /aborted|timed out/i.test(msg))) {
+        await new Promise((r) => setTimeout(r, 800));
+        continue;
+      }
+
+      throw new Error(msg || `Bootstrap failed (${res.status})`);
+    }
+  };
+
+
   const handleNext = async () => {
     if (!selectionsComplete || isBootstrapping) return;
 
     setIsBootstrapping(true);
     setBootstrapError(null);
+    startFakeProgressTo92();
 
     try {
       const websiteData = readJson("websiteData");
@@ -146,29 +202,25 @@ export default function StepSlide3({ onNext, onBack, onLanguageLocationSubmit })
       const location = [selectedCity, selectedState, selectedCountry].filter(Boolean).join(", ");
       const language = String(selectedLanguage || "").trim();
 
-      const res = await fetch("/api/onboarding/bootstrap", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ domain, industry, location, language }),
-      });
-
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson?.error || `Bootstrap failed (${res.status})`);
-      }
-
+      const res = await bootstrapWithRetry({ domain, industry, location, language });
       const data = await res.json();
-
-      try {
+try {
         localStorage.setItem("drfizz.bootstrap", JSON.stringify(data));
         localStorage.setItem("drfizz.bootstrap.key", makeKey(domain, industry, location));
         localStorage.setItem("drfizz.bootstrap.ts", String(Date.now()));
       } catch {}
 
-      onNext?.();
+      // Finish loader
+      stopFakeProgress();
+      setProgressPct(100);
+      // Slight delay so users can see 100% before moving on
+      setTimeout(() => onNext?.(), 250);
     } catch (e) {
+      stopFakeProgress();
+      setProgressPct(0);
       setBootstrapError(e?.message || "Bootstrap failed");
     } finally {
+      stopFakeProgress();
       setIsBootstrapping(false);
     }
   };
@@ -220,7 +272,27 @@ export default function StepSlide3({ onNext, onBack, onLanguageLocationSubmit })
             .inner-scroll::-webkit-scrollbar { display: none; }
           `}</style>
 
-          <div ref={scrollRef} className="inner-scroll h-full w-full overflow-y-auto">
+          <style jsx global>{`
+            .progress-wrap {
+              position: relative;
+              height: 10px;
+              width: 100%;
+              border-radius: 9999px;
+              background: #e6e8eb; /* neutral grey track */
+              overflow: hidden;
+            }
+            .progress-fill {
+              position: absolute;
+              left: 0;
+              top: 0;
+              bottom: 0;
+              width: 0%;
+              background: linear-gradient(90deg, #d45427 0%, #ffa615 100%);
+              transition: width 120ms linear;
+            }
+          `}</style>
+
+<div ref={scrollRef} className="inner-scroll h-full w-full overflow-y-auto">
             <div className="flex flex-col items-start text-start gap-5 sm:gap-6 md:gap-8 max-w-[820px] mx-auto">
               <div className="text-[11px] sm:text-[12px] md:text-[13px] text-[var(--muted)] font-medium">
                 Step - 3
@@ -372,6 +444,19 @@ export default function StepSlide3({ onNext, onBack, onLanguageLocationSubmit })
               </button>
             )}
           </div>
+          {isBootstrapping && (
+            <div className="pb-5 sm:pb-6 md:pb-7 -mt-2 flex items-center justify-center">
+              <div className="w-full max-w-[720px] px-3 sm:px-4">
+                <div className="progress-wrap">
+                  <div
+                    className="progress-fill"
+                    style={{ width: `${Math.max(0, Math.min(100, progressPct))}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
       </div>
     </div>

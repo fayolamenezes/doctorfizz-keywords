@@ -226,13 +226,22 @@ export default function CEContentArea({
   }, []);
 
   // If parent later changes `content`, adopt unless we just typed.
+// ✅ FIX: only react when the *prop* changes (prevents snapback while typing)
+  const lastSeenContentPropRef = useRef(content);
+
   useEffect(() => {
     if (typeof content !== "string") return;
+
+    // Only proceed when prop actually changes (not on every local keystroke)
+    if (lastSeenContentPropRef.current === content) return;
+    lastSeenContentPropRef.current = content;
+
     const justEdited = Date.now() - lastLocalEditAtRef.current < LOCAL_GRACE_MS;
     if (!justEdited && content !== localContent) {
       setLocalContent(content);
     }
-  }, [content, localContent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content]);
 
   /**
    * ✅ IMPORTANT FIXES:
@@ -302,7 +311,7 @@ export default function CEContentArea({
   // ----- Metrics state -----
   const [seoMode] = useState(seoModeProp ?? "advanced");
   const [metricsInternal, setMetricsInternal] = useState({
-    plagiarism: 0,
+    plagiarism: typeof metricsProp?.plagiarism === "number" ? metricsProp.plagiarism : 0,
     primaryKeyword: 0,
     wordCount: 0,
     wordTarget: metricsProp?.wordTarget ?? 1250,
@@ -313,6 +322,21 @@ export default function CEContentArea({
       lsiKeywords: { label: "—", color: "text-[var(--muted)]" },
     },
   });
+
+  // ✅ Keep the latest plagiarism from parent in a ref so metrics recompute
+  // doesn't accidentally reset it to 0 or a stale value.
+  const latestPlagiarismRef = useRef(
+    typeof metricsProp?.plagiarism === "number" ? metricsProp.plagiarism : 0
+  );
+
+  useEffect(() => {
+    if (typeof metricsProp?.plagiarism === "number") {
+      latestPlagiarismRef.current = metricsProp.plagiarism;
+      // keep internal aligned too (helps UI stay stable)
+      setMetricsInternal((m) => ({ ...m, plagiarism: metricsProp.plagiarism }));
+    }
+  }, [metricsProp?.plagiarism]);
+
 
   useEffect(() => {
     if (metricsProp?.wordTarget) {
@@ -366,9 +390,11 @@ export default function CEContentArea({
     const timer = setTimeout(() => {
       const plain = normalizePlain(html);
 
+      const currentPlagiarismForEmit = latestPlagiarismRef.current ?? 0;
+
       if (!plain) {
         const emptyMetrics = {
-          plagiarism: 0,
+          plagiarism: currentPlagiarismForEmit,
           primaryKeyword: 0,
           wordCount: 0,
           lsiKeywords: 0,
@@ -407,12 +433,11 @@ export default function CEContentArea({
             )
           : 0;
 
-      const freq = Object.create(null);
-      for (const w of words) freq[w] = (freq[w] || 0) + 1;
-      const repeats = Object.values(freq).filter((n) => n > 2).length;
-      const unique = Object.keys(freq).length;
-      const repRatio = repeats / Math.max(1, unique);
-      const plagiarism = Math.max(0, Math.min(100, Math.round(repRatio * 100)));
+      // ✅ Plagiarism is computed server-side (Perplexity) on initial open / manual refresh.
+      // Keep whatever value came from parent metrics (or our internal state), and DO NOT
+      // overwrite it on every keystroke.
+      const currentPlagiarism = latestPlagiarismRef.current ?? 0;
+
 
       const status = (val) => {
         if (val >= 75) return { label: "Good", color: "text-green-600" };
@@ -421,7 +446,7 @@ export default function CEContentArea({
       };
 
       const next = {
-        plagiarism,
+        plagiarism: currentPlagiarism,
         wordCount,
         primaryKeyword: pkScore,
         lsiKeywords: lsiPct,

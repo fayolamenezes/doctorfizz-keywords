@@ -206,10 +206,98 @@ export default function ContentEditor({ data, onBackToDashboard }) {
     lsiKeywords: 0,
   }));
 
+  // ✅ NEW: Perplexity plagiarism fetch state (manual refresh + initial run)
+  const [plagiarismLoading, setPlagiarismLoading] = useState(false);
+  const [plagiarismSources, setPlagiarismSources] = useState(
+    Array.isArray(data?.plagiarismSources) ? data.plagiarismSources : []
+  );
+  const plagiarismInitRanRef = useRef(false);
+
   // Unified SEO data from /api/seo for this document
   const [seo, setSeo] = useState(null);
   const [seoLoading, setSeoLoading] = useState(false);
   const [seoError, setSeoError] = useState("");
+
+
+  /* ---------------------------
+     ✅ Plagiarism helpers
+     --------------------------- */
+
+  const htmlToPlain = useCallback((html) => {
+    const s = String(html || "");
+    if (!s) return "";
+    return s
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }, []);
+
+  const getSourceHtml = useCallback(() => {
+    if (typeof data?.sourceHtml === "string" && data.sourceHtml.trim())
+      return data.sourceHtml;
+    if (typeof seo?.content?.html === "string" && seo.content.html.trim())
+      return seo.content.html;
+    return "";
+  }, [data?.sourceHtml, seo?.content?.html]);
+
+  const getSourceUrl = useCallback(() => {
+    // Prefer explicit url from the selected opportunity payload
+    if (typeof data?.url === "string" && data.url.trim()) return data.url;
+
+    // Fallback: if /api/seo returns a url field, use it
+    if (typeof seo?.url === "string" && seo.url.trim()) return seo.url;
+
+    return "";
+  }, [data?.url, seo?.url]);
+
+  const runPlagiarismCheck = useCallback(
+    async ({ reason = "auto" } = {}) => {
+      const draftHtml = typeof content === "string" ? content : "";
+      const draftText = htmlToPlain(draftHtml);
+      if (!draftText) return;
+
+      const sourceHtml = getSourceHtml();
+      const sourceText = sourceHtml ? htmlToPlain(sourceHtml) : "";
+      const sourceUrl = getSourceUrl();
+
+      try {
+        setPlagiarismLoading(true);
+
+        const res = await fetch("/api/plagiarism", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: sourceUrl,
+            sourceUrl,
+            draftHtml,
+            sourceHtml,
+            draftText,
+            sourceText,
+            reason,
+          }),
+        });
+
+        if (!res.ok) throw new Error(`Plagiarism check failed: ${res.status}`);
+
+        const json = await res.json();
+
+        const nextPlag = typeof json?.plagiarism === "number" ? json.plagiarism : 0;
+        setMetrics((m) => ({ ...m, plagiarism: nextPlag }));
+
+        if (Array.isArray(json?.sources)) setPlagiarismSources(json.sources);
+        else setPlagiarismSources([]);
+      } catch (e) {
+        console.error("[ContentEditor] plagiarism error:", e);
+      } finally {
+        setPlagiarismLoading(false);
+      }
+    },
+    [content, getSourceHtml, getSourceUrl, htmlToPlain]
+  );
+
 
   /* persistence + fresh-new guard */
   const restoredRef = useRef(false);
@@ -305,6 +393,36 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   useEffect(() => {
     console.log("[ContentEditor] seo", { seo, seoLoading, seoError });
   }, [seo, seoLoading, seoError]);
+
+
+  // ✅ Initial plagiarism check:
+  // - If precomputed plagiarism exists in incoming data, we keep it.
+  // - Otherwise, once we have BOTH draft content and the imported source (seo content),
+  //   run a single Perplexity plagiarism check.
+  useEffect(() => {
+    if (!restored) return;
+
+    const hasPrecomputed =
+      typeof data?.plagiarism === "number" ||
+      typeof data?.metrics?.plagiarism === "number";
+
+    if (hasPrecomputed) return;
+
+    if (plagiarismInitRanRef.current) return;
+    if (seoLoading) return;
+
+    const hasDraft = typeof content === "string" && content.trim();
+    const hasSource =
+      (typeof seo?.content?.html === "string" && seo.content.html.trim()) ||
+      (typeof seo?.content?.rawText === "string" && seo.content.rawText.trim());
+
+    if (!hasDraft || !hasSource) return;
+
+    plagiarismInitRanRef.current = true;
+    runPlagiarismCheck({ reason: "initial-open" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restored, seoLoading, seo, content, data]);
+
 
   // ✅ Hydrate editor content (and optionally title) from SEO extraction
   // Fixes: "Empty page" starter still showing (hydration was getting skipped if seo arrived early)
@@ -715,6 +833,8 @@ export default function ContentEditor({ data, onBackToDashboard }) {
           seoMode={seoMode}
           onChangeSeoMode={setSeoMode}
           canAccessAdvanced={basicsUnlocked}
+          plagiarismLoading={plagiarismLoading}
+          onRefreshPlagiarism={() => runPlagiarismCheck({ reason: "manual-refresh" })}
         />
 
         {/* Force remount of the whole content area (Research included) on new doc */}

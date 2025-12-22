@@ -9,23 +9,88 @@ import {
   completeScan,
   failScan,
   upsertOpportunitiesSnapshot,
-  // OPTIONAL (if you have it): getLatestOpportunities
-  // getLatestOpportunities,
 } from "@/lib/seo/snapshots.store";
+
+import { checkPlagiarismWithPerplexity } from "@/lib/perplexity/pipeline";
 
 /**
  * In-flight dedupe (module-level, survives within a single Node process).
  * Keyed by hostname + allowSubdomains + mode.
- *
- * NOTE:
- * - This prevents repeated scans from React StrictMode / re-renders / multi-calls.
- * - If you're running multiple server instances, you still need store-level dedupe
- *   (in snapshots.store). This is still a big improvement.
  */
 const IN_FLIGHT = new Map();
 
 function makeInFlightKey({ hostname, allowSubdomains, mode }) {
   return `opportunities|${hostname}|sub=${allowSubdomains ? 1 : 0}|mode=${mode}`;
+}
+
+function clampPct(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(100, Math.round(x)));
+}
+
+function htmlToPlain(html) {
+  const s = String(html || "");
+  if (!s) return "";
+  return s
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * ✅ NEW: Heuristic for "blog-like" urls when blogUrls are missing.
+ */
+function isBlogOrArticleLikeUrl(url) {
+  try {
+    const u = new URL(url);
+    const p = (u.pathname || "").toLowerCase();
+
+    if (
+      /\/(blog|blogs)\b/.test(p) ||
+      /\/(article|articles)\b/.test(p) ||
+      /\/(news|press)\b/.test(p) ||
+      /\/(insights|resources|stories|updates)\b/.test(p) ||
+      /\/(posts)\b/.test(p)
+    ) {
+      return true;
+    }
+
+    if (u.searchParams.has("p") || u.searchParams.has("post_type")) return true;
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ✅ NEW: If a title is empty/missing, generate a nicer fallback from the slug.
+ */
+function titleFromSlug(url) {
+  try {
+    const u = new URL(url);
+    const parts = (u.pathname || "")
+      .split("/")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (!parts.length) return "";
+
+    let slug = parts[parts.length - 1].replace(/\.[a-z0-9]+$/i, "");
+    slug = slug.replace(/[-_]+/g, " ").trim();
+    if (!slug) return "";
+
+    return slug
+      .split(" ")
+      .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(" ");
+  } catch {
+    return "";
+  }
 }
 
 export function enqueueOpportunitiesScan({
@@ -39,13 +104,11 @@ export function enqueueOpportunitiesScan({
   const mode = "published";
   const key = makeInFlightKey({ hostname, allowSubdomains, mode });
 
-  // ✅ If a scan is already running/queued in this process, return it and DO NOT start another.
   const existing = IN_FLIGHT.get(key);
   if (existing?.scanId && (existing.status === "queued" || existing.status === "running")) {
     return existing;
   }
 
-  // Create a new scan record (your existing store function)
   const scan = createScan({
     kind: "opportunities",
     websiteUrl: normalized,
@@ -54,8 +117,6 @@ export function enqueueOpportunitiesScan({
     mode,
   });
 
-  // ✅ Write an immediate snapshot so the API route can return "cached" while scanning.
-  // This prevents the route from thinking "no cached snapshot exists" and re-enqueuing.
   upsertOpportunitiesSnapshot(hostname, {
     scanId: scan.scanId,
     status: "queued",
@@ -66,10 +127,8 @@ export function enqueueOpportunitiesScan({
     pages: [],
   });
 
-  // track in-flight
   IN_FLIGHT.set(key, { ...scan, status: "queued" });
 
-  // best-effort fire-and-forget
   runOpportunitiesScan({
     inFlightKey: key,
     scanId: scan.scanId,
@@ -90,7 +149,6 @@ async function runOpportunitiesScan({
 }) {
   const hostname = getHostname(websiteUrl);
 
-  // ✅ mark running early (so API can return cached instead of enqueue again)
   try {
     upsertOpportunitiesSnapshot(hostname, {
       scanId,
@@ -102,9 +160,7 @@ async function runOpportunitiesScan({
       pages: [],
     });
     IN_FLIGHT.set(inFlightKey, { scanId, status: "running" });
-  } catch {
-    // ignore snapshot write errors
-  }
+  } catch {}
 
   try {
     const discovery = await discoverOpportunitiesUrls({
@@ -113,52 +169,78 @@ async function runOpportunitiesScan({
       crawlFallbackFn: simpleCrawlFallback,
     });
 
-    // update stage
+    let blogUrls = Array.isArray(discovery?.blogUrls) ? discovery.blogUrls : [];
+    let pageUrls = Array.isArray(discovery?.pageUrls) ? discovery.pageUrls : [];
+
+    const blogWasEmpty = blogUrls.length === 0;
+
+    if (blogUrls.length === 0 && pageUrls.length > 0) {
+      const inferredBlogs = pageUrls.filter(isBlogOrArticleLikeUrl);
+      if (inferredBlogs.length > 0) blogUrls = inferredBlogs;
+    }
+
+    if (blogUrls.length === 0) {
+      const crawled = await simpleCrawlFallback(hostname, {
+        maxCrawlPages: 80,
+        allowSubdomains,
+      });
+
+      const crawledBlogs = crawled.filter(isBlogOrArticleLikeUrl);
+      if (crawledBlogs.length > 0) blogUrls = crawledBlogs.slice(0, 40);
+
+      if (!pageUrls.length && crawled.length) {
+        pageUrls = crawled.filter((u) => !isBlogOrArticleLikeUrl(u)).slice(0, 40);
+      }
+    }
+
     try {
       upsertOpportunitiesSnapshot(hostname, {
         scanId,
         status: "running",
         mode,
         allowSubdomains,
-        diagnostics: { ...discovery?.diagnostics, stage: "fetch-meta" },
+        diagnostics: {
+          ...(discovery?.diagnostics || {}),
+          stage: "fetch-meta",
+          blogFallbackUsed: blogWasEmpty && blogUrls.length > 0,
+        },
         blogs: [],
         pages: [],
       });
     } catch {}
 
-    const blogMeta = await fetchManyMeta(
-      discovery.blogUrls,
-      hostname,
-      allowSubdomains
-    );
-    const pageMeta = await fetchManyMeta(
-      discovery.pageUrls,
-      hostname,
-      allowSubdomains
-    );
+    // ---- NEW: bounded plagiarism budget for the scan ----
+    const PLAGIARISM_MAX_ITEMS = 12; // tune this
+    let plagiarismBudgetRemaining = PLAGIARISM_MAX_ITEMS;
 
-    // ✅ complete snapshot
+    const blogMeta = await fetchManyMeta(blogUrls, hostname, allowSubdomains, {
+      getBudget: () => plagiarismBudgetRemaining,
+      consumeBudget: () => (plagiarismBudgetRemaining = Math.max(0, plagiarismBudgetRemaining - 1)),
+    });
+
+    const pageMeta = await fetchManyMeta(pageUrls, hostname, allowSubdomains, {
+      getBudget: () => plagiarismBudgetRemaining,
+      consumeBudget: () => (plagiarismBudgetRemaining = Math.max(0, plagiarismBudgetRemaining - 1)),
+    });
+
     upsertOpportunitiesSnapshot(hostname, {
       scanId,
       status: "complete",
-      diagnostics: discovery.diagnostics,
+      diagnostics: {
+        ...(discovery?.diagnostics || {}),
+        blogFallbackUsed: blogWasEmpty && blogUrls.length > 0,
+      },
       mode,
       allowSubdomains,
       blogs: blogMeta,
       pages: pageMeta,
     });
 
-    completeScan(scanId, {
-      hostname,
-      diagnostics: discovery.diagnostics,
-    });
-
+    completeScan(scanId, { hostname, diagnostics: discovery?.diagnostics });
     IN_FLIGHT.set(inFlightKey, { scanId, status: "complete" });
 
-    // clean up shortly after completion
     setTimeout(() => IN_FLIGHT.delete(inFlightKey), 30_000).unref?.();
   } catch (err) {
-    // ✅ mark failed snapshot too (important: otherwise API sees "no cache" and enqueues again)
     try {
       upsertOpportunitiesSnapshot(hostname, {
         scanId,
@@ -248,12 +330,12 @@ function extractLinks(html, baseUrl) {
 // ---------------------------
 // Fetch + meta extraction
 // ---------------------------
-async function fetchManyMeta(urls, hostname, allowSubdomains) {
+async function fetchManyMeta(urls, hostname, allowSubdomains, plagiarismBudgetApi) {
   const uniq = Array.from(new Set((urls || []).filter(Boolean)));
 
   const metas = [];
   for (const u of uniq) {
-    const meta = await fetchMeta(u, hostname, allowSubdomains);
+    const meta = await fetchMeta(u, hostname, allowSubdomains, plagiarismBudgetApi);
     if (meta) metas.push(meta);
   }
 
@@ -265,8 +347,7 @@ async function fetchManyMeta(urls, hostname, allowSubdomains) {
   });
 }
 
-async function fetchMeta(url, hostname, allowSubdomains) {
-  // host check
+async function fetchMeta(url, hostname, allowSubdomains, plagiarismBudgetApi) {
   try {
     const h = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
     if (h !== hostname && !(allowSubdomains && h.endsWith(`.${hostname}`)))
@@ -281,11 +362,58 @@ async function fetchMeta(url, hostname, allowSubdomains) {
   const html = await res.text().catch(() => "");
   if (!html) return null;
 
-  const title = extractTitle(html) || url;
+  const extractedTitle = extractTitle(html);
+  const title = extractedTitle || titleFromSlug(url) || url;
+
   const description = extractMetaDescription(html) || "";
   const wordCount = estimateWordCount(html);
 
-  return { url, title, description, wordCount, isDraft: false };
+  const bodyInner = extractBodyInnerHtml(html);
+  const contentHtml = sanitizeHtmlForEditor(bodyInner);
+
+  // ---- NEW: precompute plagiarism (bounded) ----
+  let plagiarism = 0;
+  let plagiarismCheckedAt = null;
+  let plagiarismSources = [];
+
+  const budgetLeft = plagiarismBudgetApi?.getBudget?.() ?? 0;
+  const shouldCheck =
+    budgetLeft > 0 && wordCount >= 200 && contentHtml && contentHtml.length >= 1200;
+
+  if (shouldCheck) {
+    try {
+      plagiarismBudgetApi?.consumeBudget?.();
+
+      const draftText = htmlToPlain(contentHtml).slice(0, 9000);
+
+      const out = await checkPlagiarismWithPerplexity({
+        url,
+        sourceUrl: url, // since this is the page itself
+        draftText,
+        sourceText: "", // no separate sourceText in scan mode
+        cacheKey: "", // allow helper to derive stable key
+      });
+
+      plagiarism = clampPct(out?.plagiarism);
+      plagiarismCheckedAt = out?.checkedAt || new Date().toISOString();
+      plagiarismSources = Array.isArray(out?.sources) ? out.sources : [];
+    } catch {
+      // swallow plagiarism errors; keep scan resilient
+    }
+  }
+
+  return {
+    url,
+    title,
+    description,
+    wordCount,
+    contentHtml,
+    isDraft: false,
+
+    plagiarism,
+    plagiarismCheckedAt,
+    plagiarismSources,
+  };
 }
 
 function extractTitle(html) {
@@ -318,6 +446,103 @@ function decodeHtml(s) {
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+}
+
+function extractBodyInnerHtml(fullHtml) {
+  const html = String(fullHtml || "");
+  if (!html) return "";
+  const m = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  return m ? m[1] : html;
+}
+
+function sanitizeHtmlForEditor(inputHtml) {
+  let html = String(inputHtml || "");
+  if (!html) return "";
+
+  html = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, "")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<canvas[\s\S]*?<\/canvas>/gi, "")
+    .replace(/<form[\s\S]*?<\/form>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "");
+
+  html = html
+    .replace(/<header[\s\S]*?<\/header>/gi, "")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
+    .replace(/<aside[\s\S]*?<\/aside>/gi, "");
+
+  html = html
+    .replace(/<figure[\s\S]*?<\/figure>/gi, "")
+    .replace(/<picture[\s\S]*?<\/picture>/gi, "")
+    .replace(/<img\b[^>]*>/gi, "")
+    .replace(/<source\b[^>]*>/gi, "")
+    .replace(/<video[\s\S]*?<\/video>/gi, "")
+    .replace(/<audio[\s\S]*?<\/audio>/gi, "");
+
+  html = html
+    .replace(/\son\w+\s*=\s*["'][\s\S]*?["']/gi, "")
+    .replace(/\sstyle\s*=\s*["'][\s\S]*?["']/gi, "");
+
+  html = html.replace(/<a\b([^>]*)>/gi, (m, attrs) => {
+    const href = (attrs.match(/\shref\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    const title = (attrs.match(/\stitle\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    const target = (attrs.match(/\starget\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    const rel = (attrs.match(/\srel\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    return `<a${href}${title}${target}${rel}>`;
+  });
+
+  const allowed = new Set([
+    "p",
+    "br",
+    "strong",
+    "b",
+    "em",
+    "i",
+    "u",
+    "s",
+    "blockquote",
+    "code",
+    "pre",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ul",
+    "ol",
+    "li",
+    "hr",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "a",
+    "span",
+    "div",
+  ]);
+
+  html = html.replace(/<([a-z0-9]+)\b([^>]*)>/gi, (m, tag) => {
+    const t = String(tag).toLowerCase();
+    if (t === "a") return m;
+    if (!allowed.has(t)) return `<div>`;
+    return `<${t}>`;
+  });
+
+  html = html
+    .replace(/<p>\s*(?:&nbsp;|\s|<br\s*\/?>)*\s*<\/p>/gi, "")
+    .replace(/<div>\s*(?:&nbsp;|\s|<br\s*\/?>)*\s*<\/div>/gi, "")
+    .trim();
+
+  if (html.length > 120_000) html = html.slice(0, 120_000);
+
+  return html;
 }
 
 // ---------------------------
