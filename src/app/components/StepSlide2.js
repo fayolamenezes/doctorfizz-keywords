@@ -1,7 +1,9 @@
+// src/components/StepSlide2.js
 "use client";
 
 import { useState, useEffect, useRef } from "react";
 import { ArrowRight, ArrowLeft, ChevronDown } from "lucide-react";
+import { prefetchOpportunitiesAndContent } from "@/lib/prefetch-opportunities";
 
 export default function StepSlide2({ onNext, onBack, onBusinessDataSubmit }) {
   // selections
@@ -24,6 +26,9 @@ export default function StepSlide2({ onNext, onBack, onBusinessDataSubmit }) {
 
   // remember last submitted payload
   const lastSubmittedData = useRef(null);
+
+  // ensures we don't kick prefetch multiple times from this screen
+  const didKickPrefetchRef = useRef(false);
 
   const industries = [
     "Technology & Software",
@@ -133,8 +138,46 @@ export default function StepSlide2({ onNext, onBack, onBusinessDataSubmit }) {
     openDropdown, // also scroll as dropdowns open/close (optional, feels nice)
   ]);
 
+  /* ---------------- Helpers ---------------- */
+  const getDomainFromStorage = () => {
+    try {
+      const raw = localStorage.getItem("websiteData");
+      if (!raw) return "";
+      const parsed = JSON.parse(raw);
+      return (parsed?.site || "").trim();
+    } catch {
+      return "";
+    }
+  };
+
+  const kickOppsPrefetchInBackground = () => {
+    // Start only once from this screen to avoid duplicates
+    if (didKickPrefetchRef.current) return;
+    didKickPrefetchRef.current = true;
+
+    const site = getDomainFromStorage();
+    if (!site) return;
+
+    // Fire-and-forget (do not await)
+    // This will:
+    // - POST /api/seo/opportunities (polling 202 scans)
+    // - Prefetch HTML for top 2 blogs + top 2 pages via /api/seo providers:["content"]
+    // - Fill Opportunities session cache so Dashboard + "Create from existing" are instant
+    try {
+      prefetchOpportunitiesAndContent(site, { concurrency: 2 });
+    } catch {
+      // ignore
+    }
+  };
+
   /* ---------------- Handlers ---------------- */
-  const handleNext = () => onNext?.();
+  const handleNext = () => {
+    // Start background prefetch as user moves forward (Step 2 -> Step 3)
+    // Keeps onboarding snappy while warming Dashboard content.
+    kickOppsPrefetchInBackground();
+    onNext?.();
+  };
+
   const handleBack = () => onBack?.();
   const handleDropdownToggle = (name) =>
     setOpenDropdown((prev) => (prev === name ? null : name));
@@ -165,6 +208,9 @@ export default function StepSlide2({ onNext, onBack, onBusinessDataSubmit }) {
     setCustomCategory("");
     lastSubmittedData.current = null;
     setShowSummary(false);
+
+    // allow prefetch to be kicked again if user redoes selections and proceeds
+    didKickPrefetchRef.current = false;
   };
 
   // close dropdowns on outside click
@@ -452,7 +498,8 @@ export default function StepSlide2({ onNext, onBack, onBusinessDataSubmit }) {
                 </div>
               )}
               <div className="h-2" />
-              <div ref={tailRef} /> {/* <-- tail element to anchor auto-scroll */}
+              <div ref={tailRef} />{" "}
+              {/* <-- tail element to anchor auto-scroll */}
             </div>
           </div>
         </div>

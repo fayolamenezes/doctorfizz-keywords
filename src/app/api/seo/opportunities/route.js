@@ -12,7 +12,8 @@ export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
     const websiteUrl = normalizeToHttps(body?.websiteUrl);
-    const allowSubdomains = Boolean(body?.allowSubdomains);
+    const allowSubdomains =
+      body?.allowSubdomains == null ? true : Boolean(body.allowSubdomains);
 
     if (!websiteUrl) {
       return NextResponse.json({ error: "websiteUrl is required" }, { status: 400 });

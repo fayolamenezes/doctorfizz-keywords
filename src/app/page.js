@@ -13,6 +13,7 @@ import ThemeToggle from "./components/ThemeToggle";
 import SidebarInfoPanel from "./components/SidebarInfoPanel";
 import Dashboard from "./components/Dashboard";
 import ContentEditor from "./components/ContentEditor";
+import { prefetchOpportunitiesAndContent } from "@/lib/prefetch-opportunities";
 
 /* ---------- Mobile-only compact steps: 3 / 2 with dotted connectors ---------- */
 function MobileStepsThreeTwo({ currentStep }) {
@@ -99,7 +100,7 @@ function warmupOpportunitiesScan(cleanWebsite) {
     fetch("/api/seo/opportunities", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ websiteUrl }),
+      body: JSON.stringify({ websiteUrl, allowSubdomains: true }),
     }).catch(() => {});
   } catch {}
 }
@@ -290,6 +291,9 @@ export default function Home() {
     if (cleanWebsite && lastWarmedDomainRef.current !== cleanWebsite) {
       lastWarmedDomainRef.current = cleanWebsite;
       warmupOpportunitiesScan(cleanWebsite);
+      // starts polling + fetches titles + fetches content for best 2 blogs + 2 pages
+      // and writes drfizz.opps.v1:<domain> sessionStorage cache
+      prefetchOpportunitiesAndContent(cleanWebsite, { concurrency: 2 }).catch(() => {});
     }
   }, []);
 
