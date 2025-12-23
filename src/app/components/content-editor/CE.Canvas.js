@@ -567,27 +567,27 @@ const CECanvas = forwardRef(function CECanvas(
         ref={editorRef}
         contentEditable
         suppressContentEditableWarning
-className="
-  min-h-[300px] md:min-h-[420px]
-  rounded-md border border-[var(--border)]
-  bg-white px-4 py-4
-  leading-7 text-sm md:text-[15px]
-  text-[var(--text-primary)]
-  focus:outline-none transition-colors
+        className="
+          min-h-[300px] md:min-h-[420px]
+          rounded-md border border-[var(--border)]
+          bg-white px-4 py-4
+          leading-7 text-sm md:text-[15px]
+          text-[var(--text-primary)]
+          focus:outline-none transition-colors
 
-  prose max-w-none
+          prose max-w-none
 
-  prose-p:my-3
+          prose-p:my-3
 
-  prose-h1:mt-6 prose-h1:mb-3 prose-h1:text-2xl prose-h1:font-bold
-  prose-h2:mt-5 prose-h2:mb-3 prose-h2:text-xl prose-h2:font-semibold
-  prose-h3:mt-4 prose-h3:mb-2 prose-h3:text-lg prose-h3:font-semibold
-  prose-h4:mt-3 prose-h4:mb-2 prose-h4:text-base prose-h4:font-medium
+          prose-h1:mt-6 prose-h1:mb-3 prose-h1:text-2xl prose-h1:font-bold
+          prose-h2:mt-5 prose-h2:mb-3 prose-h2:text-xl prose-h2:font-semibold
+          prose-h3:mt-4 prose-h3:mb-2 prose-h3:text-lg prose-h3:font-semibold
+          prose-h4:mt-3 prose-h4:mb-2 prose-h4:text-base prose-h4:font-medium
 
-  prose-ul:list-disc prose-ul:pl-6 prose-ul:my-3
-  prose-ol:list-decimal prose-ol:pl-6 prose-ol:my-3
-  prose-li:my-1
-"
+          prose-ul:list-disc prose-ul:pl-6 prose-ul:my-3
+          prose-ol:list-decimal prose-ol:pl-6 prose-ol:my-3
+          prose-li:my-1
+        "
         onInput={() => {
           bubble({ pushHistory: true, notifyParent: true });
           onTyping?.();
