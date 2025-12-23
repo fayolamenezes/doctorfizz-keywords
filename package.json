@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "googleapis": "^169.0.0",
+    "jsdom": "^27.3.0",
     "lucide-react": "^0.542.0",
     "next": "^16.0.8",
     "react": "19.1.0",

@@ -839,7 +839,10 @@ useEffect(() => {
     const cacheAge = cacheTs ? (Date.now() - cacheTs) : Infinity;
     const cacheFresh = cacheAge < SEO_CACHE_TTL_MS;
 
-    if (cacheFresh && (seo || seoHydratedFromCacheRef.current)) return;
+    // ✅ Don’t skip refetch if the cached SEO payload is missing the new on-page opportunity rows.
+    const hasOnpageRows = Array.isArray(seo?.seoRows) && seo.seoRows.length > 0;
+
+    if (cacheFresh && (seo || seoHydratedFromCacheRef.current) && hasOnpageRows) return;
 
     const background = !!seo; // if we have cached/old data, refresh quietly
 
@@ -859,7 +862,7 @@ const keyword = domain; // TODO: wire actual keyword later from onboarding
           languageCode: "en",
           depth: 10,
           // you can trim this list to speed things up while developing:
-          providers: ["psi", "authority", "dataforseo", "content"],
+          providers: ["psi", "authority", "dataforseo", "content", "onpageKeywords"],
         };
 
         console.log("[Dashboard] Calling /api/seo with payload:", payload);

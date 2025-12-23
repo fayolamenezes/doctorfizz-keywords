@@ -400,7 +400,7 @@ export default function Step5Slide2({
         languageCode: "en",
         depth: 10,
         // full providers list so this matches Dashboard expectations
-        providers: ["psi", "authority", "dataforseo", "content"],
+        providers: ["psi", "authority", "dataforseo", "content", "onpageKeywords"],
       };
 
       const res = await fetch("/api/seo", {

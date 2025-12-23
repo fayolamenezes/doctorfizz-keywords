@@ -1,6 +1,15 @@
 import { perplexityChat } from "@/lib/perplexity/client";
-import { SiteProfileSchema, KeywordsSchema, CompetitorsSchema } from "@/lib/perplexity/schemas";
-import { extractJsonObjectLoose, cleanList, toDomainish, normalizeHost } from "@/lib/perplexity/utils";
+import {
+  SiteProfileSchema,
+  KeywordsSchema,
+  CompetitorsSchema,
+} from "@/lib/perplexity/schemas";
+import {
+  extractJsonObjectLoose,
+  cleanList,
+  toDomainish,
+  normalizeHost,
+} from "@/lib/perplexity/utils";
 import { collectPublicSignals } from "@/lib/perplexity/publicSignals";
 import { cacheGet, cacheSet } from "@/lib/perplexity/cache";
 
@@ -51,9 +60,7 @@ function coerceKeywordsList(raw) {
     .map((k) => {
       if (typeof k === "string") return k;
       if (k && typeof k === "object") {
-        return (
-          String(k.phrase || k.keyword || k.text || k.value || "").trim()
-        );
+        return String(k.phrase || k.keyword || k.text || k.value || "").trim();
       }
       return "";
     })
@@ -76,13 +83,22 @@ export async function checkPlagiarismWithPerplexity({
 } = {}) {
   const draft = String(draftText || "").trim();
   if (!draft) {
-    return { plagiarism: 0, sources: [], checkedAt: new Date().toISOString(), cacheKey: "" };
+    return {
+      plagiarism: 0,
+      sources: [],
+      checkedAt: new Date().toISOString(),
+      cacheKey: "",
+    };
   }
 
   const derivedKey =
     cacheKey ||
     `plag:${normalizeHost(String(sourceUrl || url || "unknown"))}:${stableHashLite(
-      (sourceUrl || url || "") + "|" + draft.slice(0, 2000) + "|" + (sourceText || "").slice(0, 2000)
+      (sourceUrl || url || "") +
+        "|" +
+        draft.slice(0, 2000) +
+        "|" +
+        (sourceText || "").slice(0, 2000)
     )}`;
 
   const cached = cacheGet(derivedKey);
@@ -225,8 +241,8 @@ ${excerpt || "(no content provided)"}
 
 TASK:
 Generate:
-- 24 keyword phrases tailored to this page (70–80% non-geo, 20–30% geo if relevant).
-- Up to 6 clusters.
+- 7 keyword phrases tailored to this page (70–80% non-geo, 20–30% geo if relevant).
+- Up to 3 clusters.
 `.trim();
 
   const { content } = await perplexityChat({
@@ -237,7 +253,7 @@ Generate:
     // Reuse existing schema to keep output consistent across your keyword endpoints.
     response_format: KeywordsSchema,
     temperature: 0.22,
-    max_tokens: 1100,
+    max_tokens: 650,
   });
 
   const parsed = extractJsonObjectLoose(content) || {};
@@ -247,7 +263,7 @@ Generate:
 
   const out = {
     domain: normDomain || parsed.domain || "",
-    keywords: cleanList(keywordsList, { max: 28 }),
+    keywords: cleanList(keywordsList, { max: 7 }),
     clusters: Array.isArray(parsed.clusters) ? parsed.clusters : [],
     assumptions: Array.isArray(parsed.assumptions) ? parsed.assumptions : [],
     cacheKey: derivedKey,
@@ -268,13 +284,18 @@ Generate:
       else nonGeo.push(k);
     }
 
-    const keepGeoCount = Math.max(3, Math.round(out.keywords.length * 0.3));
+    // With only 7 keywords, keep at least 1 geo if present, but ~30% overall.
+    const keepGeoCount = Math.min(
+      geoLike.length,
+      Math.max(1, Math.round(out.keywords.length * 0.3))
+    );
+
     const keptGeo = geoLike.slice(0, keepGeoCount);
     const cleaned = nonGeo
       .concat(geoLike.slice(keepGeoCount))
       .map((k) => stripTrailingGeo(k, geoTokens));
 
-    out.keywords = cleanList([...cleaned, ...keptGeo], { max: 28 });
+    out.keywords = cleanList([...cleaned, ...keptGeo], { max: 7 });
   }
 
   cacheSet(derivedKey, out);
@@ -282,14 +303,22 @@ Generate:
 }
 
 /* ----------------- existing exports ----------------- */
-export async function getSiteProfile({ input, industry = "", location = "", cacheKey = "" }) {
+export async function getSiteProfile({
+  input,
+  industry = "",
+  location = "",
+  cacheKey = "",
+}) {
   if (cacheKey) {
     const cachedSignals = cacheGet(`signals:${cacheKey}`);
     const cachedProfile = cacheGet(`profile:${cacheKey}`);
-    if (cachedSignals && cachedProfile) return { profile: cachedProfile, signals: cachedSignals };
+    if (cachedSignals && cachedProfile)
+      return { profile: cachedProfile, signals: cachedSignals };
   }
 
-  const signals = (cacheKey && cacheGet(`signals:${cacheKey}`)) || (await collectPublicSignals(input));
+  const signals =
+    (cacheKey && cacheGet(`signals:${cacheKey}`)) ||
+    (await collectPublicSignals(input));
   if (cacheKey) cacheSet(`signals:${cacheKey}`, signals);
 
   const system = `
@@ -353,7 +382,9 @@ TASK:
     offerings: cleanList(parsed.offerings, { max: 12 }),
     geoFocus: parsed.geoFocus || location || "",
     confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.35,
-    publicSignalsUsed: Array.isArray(parsed.publicSignalsUsed) ? parsed.publicSignalsUsed : [],
+    publicSignalsUsed: Array.isArray(parsed.publicSignalsUsed)
+      ? parsed.publicSignalsUsed
+      : [],
     assumptions: Array.isArray(parsed.assumptions) ? parsed.assumptions : [],
   };
 
@@ -362,7 +393,12 @@ TASK:
   return { profile, signals };
 }
 
-export async function getKeywordsFromProfile({ profile, signals, location = "", cacheKey = "" }) {
+export async function getKeywordsFromProfile({
+  profile,
+  signals,
+  location = "",
+  cacheKey = "",
+}) {
   if (cacheKey) {
     const cached = cacheGet(`keywords:${cacheKey}`);
     if (cached) return cached;
@@ -438,7 +474,9 @@ Generate:
     const keptGeo = geoLike.slice(0, keepGeoCount);
 
     // everything else becomes non-geo (strip trailing geo)
-    const cleaned = nonGeo.concat(geoLike.slice(keepGeoCount)).map((k) => stripTrailingGeo(k, geoTokens));
+    const cleaned = nonGeo
+      .concat(geoLike.slice(keepGeoCount))
+      .map((k) => stripTrailingGeo(k, geoTokens));
 
     out.keywords = cleanList([...cleaned, ...keptGeo], { max: 24 });
   }
@@ -447,7 +485,12 @@ Generate:
   return out;
 }
 
-export async function getCompetitorsFromProfile({ profile, signals, seedKeywords = [], cacheKey = "" }) {
+export async function getCompetitorsFromProfile({
+  profile,
+  signals,
+  seedKeywords = [],
+  cacheKey = "",
+}) {
   if (cacheKey) {
     const cached = cacheGet(`competitors:${cacheKey}`);
     if (cached) return cached;
@@ -499,17 +542,22 @@ TASK:
   const parsed = extractJsonObjectLoose(content) || {};
   const domain = profile.domain;
 
-  const businessCompetitors = cleanList((parsed.businessCompetitors || []).map(toDomainish), { max: 12 }).filter(
-    (x) => normalizeHost(x) !== domain
-  );
+  const businessCompetitors = cleanList(
+    (parsed.businessCompetitors || []).map(toDomainish),
+    { max: 12 }
+  ).filter((x) => normalizeHost(x) !== domain);
 
   const bizSet = new Set(businessCompetitors.map((x) => normalizeHost(x)));
 
-  const searchCompetitors = cleanList((parsed.searchCompetitors || []).map(toDomainish), { max: 20 })
+  const searchCompetitors = cleanList(
+    (parsed.searchCompetitors || []).map(toDomainish),
+    { max: 20 }
+  )
     .filter((x) => normalizeHost(x) !== domain)
     .filter((x) => !bizSet.has(normalizeHost(x)));
 
-  const buckets = parsed.buckets && typeof parsed.buckets === "object" ? parsed.buckets : {};
+  const buckets =
+    parsed.buckets && typeof parsed.buckets === "object" ? parsed.buckets : {};
 
   const out = {
     domain,

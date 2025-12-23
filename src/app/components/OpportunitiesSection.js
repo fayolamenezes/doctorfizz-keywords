@@ -157,8 +157,14 @@ function mapApiItemToSlot(item, fallbackTitle, domain) {
     score: scoreFromWordCount(wc),
     status: item?.isDraft ? "Draft" : "Published",
 
-    // ✅ NEW: prefer cached contentHtml if present
-    content: typeof item?.contentHtml === "string" ? item.contentHtml : "",
+    // // ✅ NEW: prefer cached contentHtml if present
+    // content: typeof item?.contentHtml === "string" ? item.contentHtml : "",
+
+        // ✅ NEW: prefer cached contentHtml if present
+    content:
+      (typeof item?.contentHtml === "string" && item.contentHtml.trim()) ||
+      (typeof item?.content === "string" && item.content.trim()) ||
+      "",
 
     slug,
 
@@ -523,7 +529,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
         const res = await fetch("/api/seo/opportunities", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ websiteUrl }),
+          body: JSON.stringify({ websiteUrl, allowSubdomains: true }),
         });
 
         const json = await res.json().catch(() => ({}));

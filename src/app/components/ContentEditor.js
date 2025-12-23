@@ -157,9 +157,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   const PRIMARY_KEYWORD = useMemo(
     () =>
       norm(
-        data?.primaryKeyword ||
-          pageConfig?.primaryKeyword ||
-          "content marketing"
+        data?.primaryKeyword || pageConfig?.primaryKeyword || "content marketing"
       ),
     [data?.primaryKeyword, pageConfig?.primaryKeyword]
   );
@@ -187,10 +185,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   );
 
   const WORD_TARGET_FROM_DATA =
-    data?.metrics?.wordTarget ??
-    data?.wordTarget ??
-    pageConfig?.wordTarget ??
-    1480;
+    data?.metrics?.wordTarget ?? data?.wordTarget ?? pageConfig?.wordTarget ?? 1480;
 
   // Initial plagiarism pulled from data (multi-content) when available
   const [metrics, setMetrics] = useState(() => ({
@@ -217,7 +212,6 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   const [seo, setSeo] = useState(null);
   const [seoLoading, setSeoLoading] = useState(false);
   const [seoError, setSeoError] = useState("");
-
 
   /* ---------------------------
      ✅ Plagiarism helpers
@@ -297,7 +291,6 @@ export default function ContentEditor({ data, onBackToDashboard }) {
     },
     [content, getSourceHtml, getSourceUrl, htmlToPlain]
   );
-
 
   /* persistence + fresh-new guard */
   const restoredRef = useRef(false);
@@ -394,7 +387,6 @@ export default function ContentEditor({ data, onBackToDashboard }) {
     console.log("[ContentEditor] seo", { seo, seoLoading, seoError });
   }, [seo, seoLoading, seoError]);
 
-
   // ✅ Initial plagiarism check:
   // - If precomputed plagiarism exists in incoming data, we keep it.
   // - Otherwise, once we have BOTH draft content and the imported source (seo content),
@@ -422,7 +414,6 @@ export default function ContentEditor({ data, onBackToDashboard }) {
     runPlagiarismCheck({ reason: "initial-open" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restored, seoLoading, seo, content, data]);
-
 
   // ✅ Hydrate editor content (and optionally title) from SEO extraction
   // Fixes: "Empty page" starter still showing (hydration was getting skipped if seo arrived early)
@@ -500,6 +491,9 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   // ✅ Track previous incoming query source so typing doesn't get overwritten
   const prevDataQueryRef = useRef(data?.ui?.query || data?.primaryKeyword || "");
 
+  // ✅ NEW: Track previous incoming content so we don't overwrite editor edits
+  const prevDataContentRef = useRef(data?.content);
+
   // Mount: handle ?new/#new once, restore saved state (no more hash forcing)
   useEffect(() => {
     try {
@@ -520,6 +514,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
         setContent("");
         setQuery("");
         prevDataQueryRef.current = ""; // ✅ keep in sync
+        prevDataContentRef.current = ""; // ✅ keep in sync
         setActiveTab("content");
         setSeoMode("basic");
         setLastEdited("just now");
@@ -593,6 +588,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
       setContent(nextContent);
       setQuery("");
       prevDataQueryRef.current = ""; // ✅ keep in sync
+      prevDataContentRef.current = nextContent; // ✅ keep in sync
       setActiveTab("content");
       setSeoMode("basic");
       setLastEdited("just now");
@@ -670,6 +666,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
       // Still keep the refs in sync even if we early-return
       prevDataTitleRef.current = data?.title;
       prevDataQueryRef.current = data?.ui?.query || data?.primaryKeyword || "";
+      prevDataContentRef.current = data?.content;
       return;
     }
 
@@ -683,10 +680,17 @@ export default function ContentEditor({ data, onBackToDashboard }) {
     // keep ref up to date
     prevDataTitleRef.current = data?.title;
 
-    // Content
-    if (typeof data?.content === "string") {
-      if (data.content !== content) setContent(data.content);
+    // ✅ Content: seed only once per document, never overwrite user edits
+    const incomingContent = typeof data?.content === "string" ? data.content : "";
+    if (incomingContent !== (prevDataContentRef.current || "")) {
+      prevDataContentRef.current = incomingContent;
+
+      // Only seed if editor is currently blank
+      if (isBlankHtml(content) && incomingContent.trim()) {
+        setContent(incomingContent);
+      }
     } else if (!data?.content && isBlankHtml(content)) {
+      // If there is no incoming content and editor is blank, keep blank (no forced reset)
       if (content !== "") setContent("");
     }
 
@@ -720,13 +724,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
     if (nextPlagiarism !== metrics.plagiarism) {
       setMetrics((m) => ({ ...m, plagiarism: nextPlagiarism }));
     }
-  }, [
-    data,
-    pageConfig,
-    metrics.wordTarget,
-    metrics.plagiarism,
-    content,
-  ]);
+  }, [data, pageConfig, metrics.wordTarget, metrics.plagiarism, content]);
 
   /* ===========================
      Resolve navbar SV / KD
@@ -785,11 +783,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
         if (raw) {
           const parsed = JSON.parse(raw);
           effectiveDomain =
-            parsed?.site ||
-            parsed?.website ||
-            parsed?.domain ||
-            parsed?.value ||
-            "";
+            parsed?.site || parsed?.website || parsed?.domain || parsed?.value || "";
         }
       } catch {}
     }

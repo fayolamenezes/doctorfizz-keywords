@@ -13,6 +13,14 @@ import {
 
 import { checkPlagiarismWithPerplexity } from "@/lib/perplexity/pipeline";
 
+// ✅ Use Browserless-rendered HTML + Readability main-content extraction
+import {
+  fetchHtml,
+  extractTitle,
+  extractMetaDescription,
+  extractMainContentHtml,
+} from "@/lib/seo/extraction";
+
 /**
  * In-flight dedupe (module-level, survives within a single Node process).
  * Keyed by hostname + allowSubdomains + mode.
@@ -42,7 +50,7 @@ function htmlToPlain(html) {
 }
 
 /**
- * ✅ NEW: Heuristic for "blog-like" urls when blogUrls are missing.
+ * ✅ Heuristic for "blog-like" urls when blogUrls are missing.
  */
 function isBlogOrArticleLikeUrl(url) {
   try {
@@ -68,7 +76,7 @@ function isBlogOrArticleLikeUrl(url) {
 }
 
 /**
- * ✅ NEW: If a title is empty/missing, generate a nicer fallback from the slug.
+ * If a title is empty/missing, generate a nicer fallback from the slug.
  */
 function titleFromSlug(url) {
   try {
@@ -93,6 +101,161 @@ function titleFromSlug(url) {
   }
 }
 
+function toNumber(val) {
+  if (typeof val === "number") return Number.isFinite(val) ? val : null;
+  if (typeof val === "string") {
+    const cleaned = val.replace(/,/g, "").trim();
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function estimateWordCountFromText(text) {
+  const t = String(text || "").trim();
+  if (!t) return 0;
+  return t.split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * ✅ Make HTML "editor-safe" AND "image-free" (same rules you use elsewhere)
+ */
+function sanitizeHtmlForEditor(inputHtml) {
+  let html = String(inputHtml || "");
+  if (!html) return "";
+
+  // Drop very noisy/unsafe blocks
+  html = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, "")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<canvas[\s\S]*?<\/canvas>/gi, "")
+    .replace(/<form[\s\S]*?<\/form>/gi, "");
+
+  // Remove HTML comments
+  html = html.replace(/<!--[\s\S]*?-->/g, "");
+
+  // Remove header/nav/footer/aside that often pollutes imports (best-effort)
+  html = html
+    .replace(/<header[\s\S]*?<\/header>/gi, "")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
+    .replace(/<aside[\s\S]*?<\/aside>/gi, "");
+
+  // ✅ REMOVE IMAGES & MEDIA COMPLETELY
+  html = html
+    .replace(/<figure[\s\S]*?<\/figure>/gi, "")
+    .replace(/<picture[\s\S]*?<\/picture>/gi, "")
+    .replace(/<img\b[^>]*>/gi, "")
+    .replace(/<source\b[^>]*>/gi, "")
+    .replace(/<video[\s\S]*?<\/video>/gi, "")
+    .replace(/<audio[\s\S]*?<\/audio>/gi, "");
+
+  // Strip attributes we don’t want
+  html = html
+    .replace(/\son\w+\s*=\s*["'][\s\S]*?["']/gi, "")
+    .replace(/\sstyle\s*=\s*["'][\s\S]*?["']/gi, "");
+
+  // For <a>: keep href, title, target, rel
+  html = html.replace(/<a\b([^>]*)>/gi, (m, attrs) => {
+    const href = (attrs.match(/\shref\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    const title = (attrs.match(/\stitle\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    const target =
+      (attrs.match(/\starget\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    const rel = (attrs.match(/\srel\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    return `<a${href}${title}${target}${rel}>`;
+  });
+
+  // Allowed tags
+  const allowed = new Set([
+    "p",
+    "br",
+    "strong",
+    "b",
+    "em",
+    "i",
+    "u",
+    "s",
+    "blockquote",
+    "code",
+    "pre",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ul",
+    "ol",
+    "li",
+    "hr",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "th",
+    "td",
+    "a",
+    "span",
+    "div",
+  ]);
+
+  html = html.replace(/<([a-z0-9]+)\b([^>]*)>/gi, (m, tag, attrs) => {
+    const t = String(tag).toLowerCase();
+    if (t === "a") return m;
+
+    if (!allowed.has(t)) return `<div>`;
+
+    if (t === "table") {
+      const border =
+        (attrs.match(/\sborder\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+      const cellpadding =
+        (attrs.match(/\scellpadding\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+      const cellspacing =
+        (attrs.match(/\scellspacing\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+      return `<table${border}${cellpadding}${cellspacing}>`;
+    }
+
+    return `<${t}>`;
+  });
+
+  // Clean up empty blocks
+  html = html
+    .replace(/<p>\s*(?:&nbsp;|\s|<br\s*\/?>)*\s*<\/p>/gi, "")
+    .replace(/<div>\s*(?:&nbsp;|\s|<br\s*\/?>)*\s*<\/div>/gi, "");
+
+  html = html.replace(/\n{3,}/g, "\n\n").trim();
+
+  // keep it bounded for snapshot store
+  if (html.length > 140_000) html = html.slice(0, 140_000);
+
+  return html;
+}
+
+function extractBodyInnerHtml(fullHtml) {
+  const html = String(fullHtml || "");
+  if (!html) return "";
+  const m = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  return m ? m[1] : html;
+}
+
+/**
+ * ✅ Select "best" URLs: prioritize richer content.
+ * Default: sort by wordCount desc; tie-breaker: shorter url path (often cleaner canonical pages)
+ */
+function selectTopN(items, n = 2) {
+  const list = Array.isArray(items) ? items.slice() : [];
+  list.sort((a, b) => {
+    const aw = toNumber(a?.wordCount) ?? 0;
+    const bw = toNumber(b?.wordCount) ?? 0;
+    if (bw !== aw) return bw - aw;
+    return String(a?.url || "").length - String(b?.url || "").length;
+  });
+  return list.slice(0, n);
+}
+
 export function enqueueOpportunitiesScan({
   websiteUrl,
   allowSubdomains = false,
@@ -105,7 +268,10 @@ export function enqueueOpportunitiesScan({
   const key = makeInFlightKey({ hostname, allowSubdomains, mode });
 
   const existing = IN_FLIGHT.get(key);
-  if (existing?.scanId && (existing.status === "queued" || existing.status === "running")) {
+  if (
+    existing?.scanId &&
+    (existing.status === "queued" || existing.status === "running")
+  ) {
     return existing;
   }
 
@@ -201,7 +367,7 @@ async function runOpportunitiesScan({
         allowSubdomains,
         diagnostics: {
           ...(discovery?.diagnostics || {}),
-          stage: "fetch-meta",
+          stage: "fetch-main-content",
           blogFallbackUsed: blogWasEmpty && blogUrls.length > 0,
         },
         blogs: [],
@@ -209,19 +375,23 @@ async function runOpportunitiesScan({
       });
     } catch {}
 
-    // ---- NEW: bounded plagiarism budget for the scan ----
+    // ---- bounded plagiarism budget for the scan ----
     const PLAGIARISM_MAX_ITEMS = 12; // tune this
     let plagiarismBudgetRemaining = PLAGIARISM_MAX_ITEMS;
 
-    const blogMeta = await fetchManyMeta(blogUrls, hostname, allowSubdomains, {
+    const budgetApi = {
       getBudget: () => plagiarismBudgetRemaining,
-      consumeBudget: () => (plagiarismBudgetRemaining = Math.max(0, plagiarismBudgetRemaining - 1)),
-    });
+      consumeBudget: () =>
+        (plagiarismBudgetRemaining = Math.max(0, plagiarismBudgetRemaining - 1)),
+    };
 
-    const pageMeta = await fetchManyMeta(pageUrls, hostname, allowSubdomains, {
-      getBudget: () => plagiarismBudgetRemaining,
-      consumeBudget: () => (plagiarismBudgetRemaining = Math.max(0, plagiarismBudgetRemaining - 1)),
-    });
+    // Fetch meta for candidates
+    const blogMetaAll = await fetchManyMeta(blogUrls, hostname, allowSubdomains, budgetApi);
+    const pageMetaAll = await fetchManyMeta(pageUrls, hostname, allowSubdomains, budgetApi);
+
+    // ✅ store ONLY the “best 2 blogs + best 2 pages”
+    const blogMeta = selectTopN(blogMetaAll, 2);
+    const pageMeta = selectTopN(pageMetaAll, 2);
 
     upsertOpportunitiesSnapshot(hostname, {
       scanId,
@@ -229,6 +399,10 @@ async function runOpportunitiesScan({
       diagnostics: {
         ...(discovery?.diagnostics || {}),
         blogFallbackUsed: blogWasEmpty && blogUrls.length > 0,
+        selected: {
+          blogs: blogMeta.length,
+          pages: pageMeta.length,
+        },
       },
       mode,
       allowSubdomains,
@@ -347,7 +521,15 @@ async function fetchManyMeta(urls, hostname, allowSubdomains, plagiarismBudgetAp
   });
 }
 
+/**
+ * ✅ KEY CHANGE:
+ * - Use Browserless-rendered HTML (fetchHtml) when possible
+ * - Extract MAIN CONTENT via Readability (extractMainContentHtml)
+ * - Sanitize to editor-safe + image-free
+ * - Title prefers Readability title, then <title>, then slug
+ */
 async function fetchMeta(url, hostname, allowSubdomains, plagiarismBudgetApi) {
+  // host gate
   try {
     const h = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
     if (h !== hostname && !(allowSubdomains && h.endsWith(`.${hostname}`)))
@@ -356,22 +538,55 @@ async function fetchMeta(url, hostname, allowSubdomains, plagiarismBudgetApi) {
     return null;
   }
 
-  const res = await safeFetch(url, { timeoutMs: 15000 });
-  if (!res || !res.ok) return null;
+  let fullHtml = "";
+  let fetchedOk = false;
 
-  const html = await res.text().catch(() => "");
-  if (!html) return null;
+  // 1) Prefer Browserless-rendered HTML (best for JS sites)
+  try {
+    const fetched = await fetchHtml(url);
+    fullHtml = String(fetched?.html || "");
+    fetchedOk = Boolean(fullHtml);
+  } catch {
+    fetchedOk = false;
+    fullHtml = "";
+  }
 
-  const extractedTitle = extractTitle(html);
-  const title = extractedTitle || titleFromSlug(url) || url;
+  // 2) Fallback to direct fetch (cheap)
+  if (!fetchedOk) {
+    const res = await safeFetch(url, { timeoutMs: 15000 });
+    if (!res || !res.ok) return null;
+    fullHtml = await res.text().catch(() => "");
+    if (!fullHtml) return null;
+  }
 
-  const description = extractMetaDescription(html) || "";
-  const wordCount = estimateWordCount(html);
+  // Titles + description from full doc
+  const docTitle = extractTitle(fullHtml) || "";
+  const description = extractMetaDescription(fullHtml) || "";
 
-  const bodyInner = extractBodyInnerHtml(html);
-  const contentHtml = sanitizeHtmlForEditor(bodyInner);
+  // ✅ MAIN CONTENT via Readability
+  const main = extractMainContentHtml(fullHtml, url);
 
-  // ---- NEW: precompute plagiarism (bounded) ----
+  const mainTitle = String(main?.title || "").trim();
+  const mainHtml = String(main?.contentHtml || "").trim();
+  const mainText = String(main?.text || "").trim();
+
+  // If Readability fails, fallback to body inner html
+  const fallbackBody = extractBodyInnerHtml(fullHtml);
+  const htmlCandidate = mainHtml || fallbackBody || "";
+
+  // ✅ sanitize final HTML that we store for editor hydration
+  const contentHtml = sanitizeHtmlForEditor(htmlCandidate);
+
+  // Word count: prefer readability text, else estimate from contentHtml
+  let wordCount = estimateWordCountFromText(mainText);
+  if (!wordCount && contentHtml) {
+    wordCount = estimateWordCountFromText(htmlToPlain(contentHtml));
+  }
+
+  // Title: readability title -> <title> -> slug -> url
+  const title = mainTitle || docTitle || titleFromSlug(url) || url;
+
+  // ---- Precompute plagiarism (bounded) ----
   let plagiarism = 0;
   let plagiarismCheckedAt = null;
   let plagiarismSources = [];
@@ -388,10 +603,10 @@ async function fetchMeta(url, hostname, allowSubdomains, plagiarismBudgetApi) {
 
       const out = await checkPlagiarismWithPerplexity({
         url,
-        sourceUrl: url, // since this is the page itself
+        sourceUrl: url,
         draftText,
-        sourceText: "", // no separate sourceText in scan mode
-        cacheKey: "", // allow helper to derive stable key
+        sourceText: "",
+        cacheKey: "",
       });
 
       plagiarism = clampPct(out?.plagiarism);
@@ -407,7 +622,7 @@ async function fetchMeta(url, hostname, allowSubdomains, plagiarismBudgetApi) {
     title,
     description,
     wordCount,
-    contentHtml,
+    contentHtml, // ✅ this is now MAIN CONTENT only (sanitized)
     isDraft: false,
 
     plagiarism,
@@ -416,137 +631,8 @@ async function fetchMeta(url, hostname, allowSubdomains, plagiarismBudgetApi) {
   };
 }
 
-function extractTitle(html) {
-  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return m ? decodeHtml(m[1]).trim() : "";
-}
-
-function extractMetaDescription(html) {
-  const m =
-    html.match(/<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i) ||
-    html.match(/<meta\s+content=["']([^"']+)["']\s+name=["']description["']/i);
-  return m ? decodeHtml(m[1]).trim() : "";
-}
-
-function estimateWordCount(html) {
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!text) return 0;
-  return text.split(" ").filter(Boolean).length;
-}
-
-function decodeHtml(s) {
-  return String(s || "")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
-}
-
-function extractBodyInnerHtml(fullHtml) {
-  const html = String(fullHtml || "");
-  if (!html) return "";
-  const m = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  return m ? m[1] : html;
-}
-
-function sanitizeHtmlForEditor(inputHtml) {
-  let html = String(inputHtml || "");
-  if (!html) return "";
-
-  html = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, "")
-    .replace(/<svg[\s\S]*?<\/svg>/gi, "")
-    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
-    .replace(/<canvas[\s\S]*?<\/canvas>/gi, "")
-    .replace(/<form[\s\S]*?<\/form>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "");
-
-  html = html
-    .replace(/<header[\s\S]*?<\/header>/gi, "")
-    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
-    .replace(/<aside[\s\S]*?<\/aside>/gi, "");
-
-  html = html
-    .replace(/<figure[\s\S]*?<\/figure>/gi, "")
-    .replace(/<picture[\s\S]*?<\/picture>/gi, "")
-    .replace(/<img\b[^>]*>/gi, "")
-    .replace(/<source\b[^>]*>/gi, "")
-    .replace(/<video[\s\S]*?<\/video>/gi, "")
-    .replace(/<audio[\s\S]*?<\/audio>/gi, "");
-
-  html = html
-    .replace(/\son\w+\s*=\s*["'][\s\S]*?["']/gi, "")
-    .replace(/\sstyle\s*=\s*["'][\s\S]*?["']/gi, "");
-
-  html = html.replace(/<a\b([^>]*)>/gi, (m, attrs) => {
-    const href = (attrs.match(/\shref\s*=\s*["'][^"']*["']/i) || [])[0] || "";
-    const title = (attrs.match(/\stitle\s*=\s*["'][^"']*["']/i) || [])[0] || "";
-    const target = (attrs.match(/\starget\s*=\s*["'][^"']*["']/i) || [])[0] || "";
-    const rel = (attrs.match(/\srel\s*=\s*["'][^"']*["']/i) || [])[0] || "";
-    return `<a${href}${title}${target}${rel}>`;
-  });
-
-  const allowed = new Set([
-    "p",
-    "br",
-    "strong",
-    "b",
-    "em",
-    "i",
-    "u",
-    "s",
-    "blockquote",
-    "code",
-    "pre",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "ul",
-    "ol",
-    "li",
-    "hr",
-    "table",
-    "thead",
-    "tbody",
-    "tr",
-    "th",
-    "td",
-    "a",
-    "span",
-    "div",
-  ]);
-
-  html = html.replace(/<([a-z0-9]+)\b([^>]*)>/gi, (m, tag) => {
-    const t = String(tag).toLowerCase();
-    if (t === "a") return m;
-    if (!allowed.has(t)) return `<div>`;
-    return `<${t}>`;
-  });
-
-  html = html
-    .replace(/<p>\s*(?:&nbsp;|\s|<br\s*\/?>)*\s*<\/p>/gi, "")
-    .replace(/<div>\s*(?:&nbsp;|\s|<br\s*\/?>)*\s*<\/div>/gi, "")
-    .trim();
-
-  if (html.length > 120_000) html = html.slice(0, 120_000);
-
-  return html;
-}
-
 // ---------------------------
-// Fetch with timeout
+// Fetch with timeout (fallback only)
 // ---------------------------
 async function safeFetch(url, { timeoutMs = 12000 } = {}) {
   const ctrl = new AbortController();

@@ -108,7 +108,7 @@ export default function NewOnPageSEOTable({ rows, progress = 1 }) {
   // ✅ Memoize data so the reference is stable between renders
   const data = useMemo(() => {
     const base = Array.isArray(rows) && rows.length ? rows : fallback;
-    return base.slice(0, 200);
+    return base.slice(0, 7);
   }, [rows, fallback]);
 
   // Active map state
