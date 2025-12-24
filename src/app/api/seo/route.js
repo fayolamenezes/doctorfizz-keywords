@@ -21,6 +21,37 @@ export const runtime = "nodejs";
 
 const DEBUG_CONTENT = String(process.env.DEBUG_CONTENT || "").trim() === "1";
 
+// ✅ Perplexity FAQs (main source)
+// NOTE: Uses Perplexity Chat Completions endpoint directly (server-side).
+// Set one of these in your env: PERPLEXITY_API_KEY / PPLX_API_KEY / PERPLEXITY_KEY
+const PERPLEXITY_API_KEY =
+  process.env.PERPLEXITY_API_KEY ||
+  process.env.PPLX_API_KEY ||
+  process.env.PERPLEXITY_KEY ||
+  "";
+
+function hasPerplexityKey() {
+  return !!String(PERPLEXITY_API_KEY || "").trim();
+}
+
+function clampFaqCount(n, fallback = 10) {
+  const x = Math.round(Number(n) || fallback);
+  return Math.max(3, Math.min(20, x));
+}
+
+function truncateForModel(s, maxChars = 12000) {
+  const str = String(s || "");
+  if (str.length <= maxChars) return str;
+  // Keep head + tail for better coverage of key info
+  const head = str.slice(0, Math.max(0, Math.floor(maxChars * 0.7)));
+  const tail = str.slice(-Math.max(0, Math.floor(maxChars * 0.3)));
+  return `${head}
+
+[...truncated...]
+
+${tail}`;
+}
+
 /**
  * Normalize any user input into a valid absolute URL string.
  * - "example.com"        -> "https://example.com"
@@ -621,6 +652,107 @@ async function fetchOnpageKeywordsViaPerplexity({ url, domain, industry = "", lo
 }
 /* ----------------- END: Perplexity on-page keywords ----------------- */
 
+/* ----------------- NEW: FAQs via Perplexity (main source) ----------------- */
+/**
+ * Generate FAQ pairs from extracted page text.
+ * Returns: { faqs: [{ question, answer }] }
+ */
+async function generateFaqsViaPerplexity({
+  rawText = "",
+  domain = "",
+  keyword = "",
+  count = 10,
+}) {
+  const text = String(rawText || "").trim();
+  const c = clampFaqCount(count, 10);
+
+  if (!text) {
+    return { faqs: [] };
+  }
+
+  if (!hasPerplexityKey()) {
+    throw new Error(
+      "Perplexity API key missing. Set PERPLEXITY_API_KEY (or PPLX_API_KEY / PERPLEXITY_KEY)."
+    );
+  }
+
+  // Keep prompt grounded in the provided page content ONLY.
+  const pageText = truncateForModel(text, 12000);
+
+  const system = [
+    "You are an SEO assistant generating FAQs for a website page.",
+    "Use ONLY the provided page text. Do not browse the web.",
+    "Write concise, helpful answers (1-3 sentences).",
+    "Avoid medical/legal/financial advice disclaimers unless the page is about those topics.",
+    "Do not hallucinate facts; if the page text doesn't contain an answer, rephrase the question to fit what is present.",
+    "Return STRICT JSON only.",
+  ].join(" ");
+
+  const user = [
+    `Domain: ${domain || ""}`,
+    `Keyword/Topic: ${keyword || ""}`,
+    `Task: Generate ${c} FAQs from the page text below.`,
+    `Return JSON in this exact format: {"faqs":[{"question":"...","answer":"..."}]}`,
+    "",
+    "PAGE_TEXT:",
+    pageText,
+  ].join("\n");
+
+  const body = {
+    // Keep model configurable via env; default to a Perplexity "sonar" family model.
+    model: process.env.PERPLEXITY_MODEL || process.env.PPLX_MODEL || "sonar",
+    temperature: 0.2,
+    max_tokens: 900,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+  };
+
+  const res = await fetch("https://api.perplexity.ai/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Perplexity FAQs failed: ${res.status} - ${t.slice(0, 200)}`);
+  }
+
+  const json = await res.json().catch(() => ({}));
+  const content = json?.choices?.[0]?.message?.content ?? "";
+
+  // Parse strict JSON from the model response
+  let parsed = null;
+  try {
+    parsed = content ? JSON.parse(content) : null;
+  } catch {
+    // Try to extract JSON block if wrapped in extra text
+    const m = String(content || "").match(/\{[\s\S]*\}/);
+    parsed = m ? JSON.parse(m[0]) : null;
+  }
+
+  const faqs = Array.isArray(parsed?.faqs) ? parsed.faqs : [];
+
+  // Normalize output
+  const cleaned = faqs
+    .map((it) => ({
+      question: String(it?.question || "").trim(),
+      answer: String(it?.answer || "").trim(),
+    }))
+    .filter((it) => it.question && it.answer)
+    .slice(0, c);
+
+  return { faqs: cleaned };
+}
+/* ----------------- END: FAQs via Perplexity ----------------- */
+
+
+
 /**
  * Build InfoPanel metrics without GSC:
  */
@@ -671,14 +803,13 @@ function buildInfoPanel(unified) {
 }
 
 // ✅ unify "seoRows" from different shapes safely
+// NOTE: Per user's requirement, we DO NOT populate seoRows from DataForSEO.
+// seoRows should come from Perplexity on-page keywords (provider: "onpageKeywords") only.
 function ensureSeoRows(unified) {
   if (Array.isArray(unified.seoRows)) return;
 
-  if (Array.isArray(unified?.dataForSeo?.topKeywords)) {
-    unified.seoRows = unified.dataForSeo.topKeywords;
-    return;
-  }
-
+  // Legacy compatibility: if some provider already returns seoRows under a nested key,
+  // allow that, but skip DataForSEO keyword lists.
   if (Array.isArray(unified?.dataforseo?.seoRows)) {
     unified.seoRows = unified.dataforseo.seoRows;
     return;
@@ -767,7 +898,7 @@ export async function POST(request) {
       languageCode = "en",
       depth = 10,
       keywordsOnly = false,
-      providers = ["psi", "authority", "serper", "dataforseo", "content"],
+      providers = ["psi", "authority", "serper", "dataforseo", "content", "faqs"],
     } = body || {};
 
     if (!url) {
@@ -1000,6 +1131,46 @@ export async function POST(request) {
         } catch (err) {
           unified._errors = unified._errors || {};
           unified._errors.contentPipeline = err?.message || "Content pipeline failed";
+        }
+      }
+
+      // -----------------------------------------
+      // ✅ FAQs via Perplexity (MAIN)
+      // -----------------------------------------
+      if (providers.includes("faqs") && !keywordsOnly) {
+        try {
+          // Ensure we have rawText available
+          if (!unified.content?.rawText) {
+            const content = await buildContentPayload(url);
+            unified.content = unified.content || {};
+            unified.content.rawText = content.rawText || "";
+            unified.content.html = unified.content.html || content.html || "";
+            unified.content.title = unified.content.title || content.title || null;
+            unified.content.source =
+              unified.content.source || content.source || (content.html ? "rendered" : "text_fallback");
+          }
+
+          const rawText = (unified.content?.rawText || "").trim();
+          const count = clampFaqCount(body?.faqCount ?? body?.faqsCount ?? 10, 10);
+
+          if (rawText) {
+            const out = await generateFaqsViaPerplexity({
+              rawText,
+              domain,
+              keyword: keyword || "",
+              count,
+            });
+
+            unified.faqs = {
+              peopleAlsoAsk: Array.isArray(out?.faqs) ? out.faqs : [],
+              source: "perplexity",
+            };
+          } else {
+            unified.faqs = { peopleAlsoAsk: [], source: "perplexity", reason: "no_rawText" };
+          }
+        } catch (err) {
+          unified._errors = unified._errors || {};
+          unified._errors.faqs = err?.message || "Perplexity FAQ generation failed";
         }
       }
 
@@ -1271,7 +1442,47 @@ export async function POST(request) {
             }
           }
 
-          // ✅ RapidAPI fallback in SSE mode
+          
+          // -----------------------------------------
+          // ✅ FAQs via Perplexity (MAIN)
+          // -----------------------------------------
+          if (providers.includes("faqs") && !keywordsOnly) {
+            try {
+              const rawTextForFaqs = String(unified.content?.rawText || "").trim();
+              const count = clampFaqCount(body?.faqCount ?? body?.faqsCount ?? 10, 10);
+
+              if (rawTextForFaqs) {
+                send("status", {
+                  stage: "faqs",
+                  state: "start",
+                  message: "Generating FAQs (Perplexity)…",
+                });
+
+                const out = await generateFaqsViaPerplexity({
+                  rawText: rawTextForFaqs,
+                  domain,
+                  keyword: keyword || "",
+                  count,
+                });
+
+                unified.faqs = {
+                  peopleAlsoAsk: Array.isArray(out?.faqs) ? out.faqs : [],
+                  source: "perplexity",
+                };
+
+                send("status", { stage: "faqs", state: "done", message: "FAQs generated" });
+              } else {
+                unified.faqs = { peopleAlsoAsk: [], source: "perplexity", reason: "no_rawText" };
+              }
+            } catch (e) {
+              unified._errors = unified._errors || {};
+              unified._errors.faqs = e?.message || "Perplexity FAQ generation failed";
+              send("status", { stage: "faqs", state: "error", message: unified._errors.faqs });
+            }
+          }
+
+
+// ✅ RapidAPI fallback in SSE mode
           if (providers.includes("dataforseo") && domain && !keywordsOnly && needsBacklinkFallback(unified)) {
             send("status", { stage: "rapidapi", state: "start", message: "Falling back for backlink metrics…" });
 

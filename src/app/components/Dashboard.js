@@ -271,6 +271,25 @@ function formatCompactNumber(n) {
   if (v >= 1_000) return fmt(v / 1_000, "K");
   return sign + Math.round(v).toString();
 }
+
+/** Small source pill with hover tooltip (used for GA4/GSC numbers beside big values) */
+function SourcePill({ label, value, source }) {
+  return (
+    <div className="relative group">
+      <div
+        className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--input)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)] cursor-help"
+        aria-label={`Comes from ${source}`}
+        title={`Comes from ${source}`}
+      >
+        {label}: {value}
+      </div>
+
+      <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-1 w-max -translate-x-1/2 rounded-md bg-black px-2 py-1 text-[11px] text-white opacity-0 shadow transition-opacity group-hover:opacity-100">
+        Comes from {source}
+      </div>
+    </div>
+  );
+}
 /** Heuristics to retrieve the site the user entered during onboarding */
 function getSiteFromStorageOrQuery(searchParams) {
   // 1) Highest priority: ?site=
@@ -1409,6 +1428,50 @@ const mapped = {
     });
   }, [seo, domain, fallbackSelected, ga4Metrics, gscMetrics, googleStatus.connected, ga4Error, gscError, ga4Properties, gscSites]);
 
+  // ---------------- NEW: Base performance numbers (Big values) ----------------
+  // Big values in the Performance cards should come from seo-data.json (fallbackSelected) or realistic randoms.
+  // Google (GA4/GSC) values are shown as small badges beside the big values.
+  const basePerf = useMemo(() => {
+    const d = seo?._meta?.domain || domain || "example.com";
+    return buildPerformanceFallback({ domain: d, api: {}, jsonRow: fallbackSelected });
+  }, [seo, domain, fallbackSelected]);
+
+  // Small "Google" numbers (for badges beside the big values)
+  const googlePerf = useMemo(() => {
+    const out = {
+      ga4TrafficMonthly: undefined,
+      ga4LeadsMonthly: undefined,
+      gscKeywordsTotal: undefined,
+    };
+
+    const gaTrafficMonthly =
+      typeof ga4Metrics?.organicTraffic === "number"
+        ? ga4Metrics.organicTraffic
+        : ga4Metrics?.organicTraffic?.monthly;
+
+    const gaLeadsMonthly =
+      typeof ga4Metrics?.leads === "number"
+        ? ga4Metrics.leads
+        : ga4Metrics?.leads?.monthly;
+
+    const gscKwTotal =
+      typeof gscMetrics?.keywordsTotal === "number"
+        ? gscMetrics.keywordsTotal
+        : gscMetrics?.organicKeywords?.total;
+
+    if (typeof gaTrafficMonthly === "number" && Number.isFinite(gaTrafficMonthly)) {
+      out.ga4TrafficMonthly = gaTrafficMonthly;
+    }
+    if (typeof gaLeadsMonthly === "number" && Number.isFinite(gaLeadsMonthly)) {
+      out.ga4LeadsMonthly = gaLeadsMonthly;
+    }
+    if (typeof gscKwTotal === "number" && Number.isFinite(gscKwTotal)) {
+      out.gscKeywordsTotal = gscKwTotal;
+    }
+
+    return out;
+  }, [ga4Metrics, gscMetrics]);
+
 // ---------------- GA4/GSC UI notice state (for Performance cards) ----------------
 const analyticsNotice = useMemo(() => {
     const toNum = (v) => {
@@ -1552,21 +1615,21 @@ const analyticsNotice = useMemo(() => {
   const PS_DESKTOP = selected?.pageSpeed?.desktop ?? 0;
   const PS_MOBILE  = selected?.pageSpeed?.mobile ?? 0;
 
-  const OT_TARGET  = perfData?.organicTraffic?.monthly ?? 0;
-  const OK_TOTAL   = perfData?.organicKeywords?.total ?? 0;
+  const OT_TARGET  = basePerf?.organicTraffic?.monthly ?? 0;
+  const OK_TOTAL   = basePerf?.organicKeywords?.total ?? 0;
 
   // If breakdown present, use it; else fall back to your demo split
   const OK_SPLIT = {
-    top3:  perfData?.organicKeywords?.top3  ?? 0,
-    top10: perfData?.organicKeywords?.top10 ?? 0,
-    top100:perfData?.organicKeywords?.top100?? 0,
+    top3:  basePerf?.organicKeywords?.top3  ?? 0,
+    top10: basePerf?.organicKeywords?.top10 ?? 0,
+    top100:basePerf?.organicKeywords?.top100?? 0,
     total: OK_TOTAL,
   };
 
-  const LEADS_TARGET = perfData?.leads?.monthly ?? 0;
-  const LEADS_GOAL   = perfData?.leads?.goal ?? 0;
-  const CF_VALUE     = perfData?.leads?.contactForm ?? 0;
-  const NL_VALUE     = perfData?.leads?.newsletter ?? 0;
+  const LEADS_TARGET = basePerf?.leads?.monthly ?? 0;
+  const LEADS_GOAL   = basePerf?.leads?.goal ?? 0;
+  const CF_VALUE     = basePerf?.leads?.contactForm ?? 0;
+  const NL_VALUE     = basePerf?.leads?.newsletter ?? 0;
   const CF_LIMIT     = 800;
   const NL_LIMIT     = 400;
 
@@ -2545,7 +2608,7 @@ const seoTableProg = Math.max(0, prog);
                   <BarChart3 size={16} />
                 </span>
                 <span className="flex items-center gap-1 text-[13px] text-gray-700 leading-relaxed">Organic traffic</span>
-                {(perfData?.organicTraffic?.growth ?? 0) > 0 && (
+                {(basePerf?.organicTraffic?.growth ?? 0) > 0 && (
                   <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-[#EAF8F1] px-2 py-0.5 text-[11px] font-medium text-[#178A5D]">
                     <span className="h-2 w-2 rounded-full bg-[#22C55E]" />
                     Positive Growth
@@ -2561,8 +2624,17 @@ const seoTableProg = Math.max(0, prog);
               <div className="text-[32px] font-semibold leading-none text-[var(--text)] tabular-nums">
                 {formatCompactNumber(otValue)}
               </div>
+
+              {typeof googlePerf.ga4TrafficMonthly === "number" ? (
+                <SourcePill
+                  label="GA4"
+                  value={formatCompactNumber(googlePerf.ga4TrafficMonthly)}
+                  source="Google Analytics"
+                />
+              ) : null}
+
               <div className="ml-1 inline-flex items-center gap-1 rounded-full bg-[#EAF8F1] px-2 py-0.5 text-[11px] font-medium text-[#178A5D]">
-                ↗︎ +{perfData?.organicTraffic?.growth ?? 0}
+                ↗︎ +{basePerf?.organicTraffic?.growth ?? 0}
               </div>
             </div>
 
@@ -2583,7 +2655,7 @@ const seoTableProg = Math.max(0, prog);
                   <path d="M 8 120 C 60 60, 110 85, 150 95 S 240 110, 270 88 S 350 60, 385 92 S 455 60, 512 20" fill="none" stroke="#22C55E" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" pathLength="100" strokeDasharray="100" strokeDashoffset={100 - otProg * 100} />
                 </g>
                 <g fontFamily="ui-sans-serif, system-ui" fontSize="10" fill="#8D96A8" textAnchor="start">
-                  <text x="500" y="18">+{perfData?.organicTraffic?.growth ?? 0}</text>
+                  <text x="500" y="18">+{basePerf?.organicTraffic?.growth ?? 0}</text>
                   <text x="500" y="54">18</text>
                   <text x="500" y="90">12</text>
                 </g>
@@ -2618,8 +2690,18 @@ const seoTableProg = Math.max(0, prog);
               </span>
             </div>
 
-            <div className="mt-3 text-[32px] font-semibold leading-none text-[var(--text)] tabular-nums">
-              {formatCompactNumber(okValue)}
+            <div className="mt-3 flex items-end gap-2">
+              <div className="text-[32px] font-semibold leading-none text-[var(--text)] tabular-nums">
+                {formatCompactNumber(okValue)}
+              </div>
+
+              {typeof googlePerf.gscKeywordsTotal === "number" ? (
+                <SourcePill
+                  label="GSC"
+                  value={formatCompactNumber(googlePerf.gscKeywordsTotal)}
+                  source="Google Search Console"
+                />
+              ) : null}
             </div>
 
             <div className="mt-4 space-y-2">
@@ -2683,7 +2765,7 @@ const seoTableProg = Math.max(0, prog);
 
               <div className="flex items-center gap-2">
                 {(() => {
-                  const g = perfData?.leads?.growth;
+                  const g = basePerf?.leads?.growth;
                   const isNum = typeof g === "number" && !Number.isNaN(g);
                   const up = isNum ? g >= 0 : true;
                   const sign = isNum ? (up ? "+" : "−") : "+";
@@ -2722,8 +2804,18 @@ const seoTableProg = Math.max(0, prog);
               return (
                 <>
                   {/* Total Leads (animated) */}
-                  <div className="mt-3 text-[32px] font-semibold leading-none text-[var(--text)] tabular-nums">
-                    {formatNumber(totalLeadsAnimated)}
+                  <div className="mt-3 flex items-end gap-2">
+                    <div className="text-[32px] font-semibold leading-none text-[var(--text)] tabular-nums">
+                      {formatNumber(totalLeadsAnimated)}
+                    </div>
+
+                    {typeof googlePerf.ga4LeadsMonthly === "number" ? (
+                      <SourcePill
+                        label="GA4"
+                        value={formatCompactNumber(googlePerf.ga4LeadsMonthly)}
+                        source="Google Analytics"
+                      />
+                    ) : null}
                   </div>
 
                   {/* Goals */}

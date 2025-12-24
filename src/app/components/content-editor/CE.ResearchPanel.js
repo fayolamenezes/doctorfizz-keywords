@@ -696,7 +696,7 @@ export default function CEResearchPanel({
             {tab === "faqs" && (
               <SeoAdvancedFaqs
                 onPasteToEditor={onPasteToEditor}
-                faqs={faqs}
+                faqs={demoMode ? faqs : undefined}
                 currentPage={resolvedPage}
                 seoData={seoData}
                 seoLoading={seoLoading}

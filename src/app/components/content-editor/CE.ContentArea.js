@@ -226,7 +226,7 @@ export default function CEContentArea({
   }, []);
 
   // If parent later changes `content`, adopt unless we just typed.
-// ✅ FIX: only react when the *prop* changes (prevents snapback while typing)
+  // ✅ FIX: only react when the *prop* changes (prevents snapback while typing)
   const lastSeenContentPropRef = useRef(content);
 
   useEffect(() => {
@@ -265,9 +265,10 @@ export default function CEContentArea({
 
     // Prefer HTML to preserve headings/paragraph formatting, but strip images.
     const seoHtml = seoHtmlRaw ? stripImagesKeepFormatting(seoHtmlRaw) : "";
-    const seed = (seoHtml && seoHtml.trim()) || (seoTextRaw && seoTextRaw.trim())
-      ? (seoHtml && seoHtml.trim()) || textToHtml(seoTextRaw)
-      : "";
+    const seed =
+      (seoHtml && seoHtml.trim()) || (seoTextRaw && seoTextRaw.trim())
+        ? (seoHtml && seoHtml.trim()) || textToHtml(seoTextRaw)
+        : "";
 
     if (!seed) return;
 
@@ -311,7 +312,8 @@ export default function CEContentArea({
   // ----- Metrics state -----
   const [seoMode] = useState(seoModeProp ?? "advanced");
   const [metricsInternal, setMetricsInternal] = useState({
-    plagiarism: typeof metricsProp?.plagiarism === "number" ? metricsProp.plagiarism : 0,
+    plagiarism:
+      typeof metricsProp?.plagiarism === "number" ? metricsProp.plagiarism : 0,
     primaryKeyword: 0,
     wordCount: 0,
     wordTarget: metricsProp?.wordTarget ?? 1250,
@@ -336,7 +338,6 @@ export default function CEContentArea({
       setMetricsInternal((m) => ({ ...m, plagiarism: metricsProp.plagiarism }));
     }
   }, [metricsProp?.plagiarism]);
-
 
   useEffect(() => {
     if (metricsProp?.wordTarget) {
@@ -437,7 +438,6 @@ export default function CEContentArea({
       // Keep whatever value came from parent metrics (or our internal state), and DO NOT
       // overwrite it on every keystroke.
       const currentPlagiarism = latestPlagiarismRef.current ?? 0;
-
 
       const status = (val) => {
         if (val >= 75) return { label: "Good", color: "text-green-600" };

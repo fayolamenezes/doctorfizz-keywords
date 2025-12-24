@@ -10,6 +10,7 @@ import {
   ChevronRight,
   X,
   Search as SearchIcon,
+  Loader2, // ✅ ADDED (circular loading icon)
 } from "lucide-react";
 
 /* ===========================
@@ -559,13 +560,11 @@ function deriveKeywordsFromSeoData(seoData) {
 
 /* ===========================
    NEW: convert Perplexity keywords into Optimize row format
-   - supports both string keywords and object keywords
    =========================== */
 
 function coercePxKeywordObjects(pxKeywords) {
   const arr = Array.isArray(pxKeywords) ? pxKeywords : [];
 
-  // If server returns keyword objects: [{ phrase, links, sourcesCount }]
   if (arr.length && typeof arr[0] === "object" && arr[0] !== null) {
     return arr
       .map((k) => ({
@@ -577,7 +576,6 @@ function coercePxKeywordObjects(pxKeywords) {
       .filter((k) => k.phrase);
   }
 
-  // If server returns strings: ["kw1","kw2"]
   return arr
     .map((s) => ({ phrase: safeString(s), links: [], sourcesCount: undefined }))
     .filter((k) => k.phrase);
@@ -608,20 +606,21 @@ function buildPerplexityRows(pxKeywords) {
         ? item.sourcesCount
         : links.length;
 
-    const type = title.split(/\s+/).filter(Boolean).length > 2 ? "Long Tail" : "All Topics";
+    const type =
+      title.split(/\s+/).filter(Boolean).length > 2
+        ? "Long Tail"
+        : "All Topics";
 
     out.push({
       id: `px:${key}`,
       title,
       used: 0,
       recommended: 3,
-      // ✅ IMPORTANT: sources is NUMERIC like before (not "Perplexity")
       sources: sourcesCount || 0,
       type,
       mine: 0,
       avg: 3,
       results: links.length || sourcesCount || 1,
-      // ✅ IMPORTANT: links exist so drawer shows the cards
       links,
     });
   }
@@ -635,11 +634,11 @@ function buildPerplexityRows(pxKeywords) {
 
 export default function SeoAdvancedOptimize({
   onPasteToEditor,
-  optimizeData, // kept for compatibility
-  currentPage, // kept for compatibility
-  basicsData, // optional
-  editorContent = "", // live HTML from Canvas
-  seoData, // unified SEO data from /api/seo
+  optimizeData,
+  currentPage,
+  basicsData,
+  editorContent = "",
+  seoData,
 }) {
   const KPIS = [
     { label: "HEADINGS", value: 2, delta: 29, up: false },
@@ -647,14 +646,10 @@ export default function SeoAdvancedOptimize({
     { label: "IMAGES", value: 3, delta: 1, up: true },
   ];
 
-  /* ===========================
-     Perplexity page-keywords fetch
-     =========================== */
-
   const pageCtx = useMemo(() => getPageContext(seoData), [seoData]);
   const promptText = useMemo(() => htmlToText(editorContent), [editorContent]);
 
-  const [pxKeywords, setPxKeywords] = useState([]); // can be string[] or object[]
+  const [pxKeywords, setPxKeywords] = useState([]);
   const [pxLoading, setPxLoading] = useState(false);
   const [pxError, setPxError] = useState("");
 
@@ -680,7 +675,6 @@ export default function SeoAdvancedOptimize({
         setPxLoading(true);
         setPxError("");
 
-        // change cache key when url/title/content length changes
         const cacheKey = `opt:${normalizePhraseKey(url || title)}:${promptText.length}`;
 
         const res = await fetch("/api/keywords/page-suggest", {
@@ -692,9 +686,6 @@ export default function SeoAdvancedOptimize({
             title,
             contentText: promptText,
             cacheKey,
-            // optional steering:
-            // industry: basicsData?.industry,
-            // location: basicsData?.location,
           }),
         });
 
@@ -704,10 +695,6 @@ export default function SeoAdvancedOptimize({
         }
 
         const json = await res.json().catch(() => ({}));
-
-        // ✅ supports both formats:
-        // - keywords: string[]
-        // - keywords: [{ phrase, links, sourcesCount }]
         const list = Array.isArray(json?.keywords) ? json.keywords : [];
 
         if (!mounted) return;
@@ -729,31 +716,12 @@ export default function SeoAdvancedOptimize({
     };
   }, [pageCtx.url, pageCtx.title, promptText]);
 
-  /* ===========================
-     Merge dataset: (SEO rows) + (Perplexity rows with sources/links)
-     =========================== */
-
   const keywords = useMemo(() => {
-    const seoRows = deriveKeywordsFromSeoData(seoData || {});
+    // Per user's requirement: show ONLY Perplexity keywords in Optimize.
+    // (No DataForSEO / seoData-derived keywords.)
     const pxRows = buildPerplexityRows(pxKeywords);
-
-    // merge + dedupe by phrase (prefer SEO rows if duplicate)
-    const seen = new Set(seoRows.map((r) => normalizePhraseKey(r.title)));
-    const merged = [...seoRows];
-
-    for (const r of pxRows) {
-      const key = normalizePhraseKey(r.title);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      merged.push(r);
-    }
-
-    return merged.slice(0, 999);
-  }, [seoData, pxKeywords]);
-
-  /* ===========================
-     LIVE counts from Canvas
-     =========================== */
+    return pxRows.slice(0, 999);
+  }, [pxKeywords]);
 
   const plain = useMemo(() => normalizePlain(editorContent), [editorContent]);
 
@@ -775,7 +743,6 @@ export default function SeoAdvancedOptimize({
     });
   }, [keywords, liveCounts]);
 
-  // broadcast highlight rules to Canvas whenever live counts change
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!Array.isArray(liveKeywords)) return;
@@ -787,28 +754,27 @@ export default function SeoAdvancedOptimize({
         return {
           phrase: String(k.title || ""),
           status,
-          className: HIGHLIGHT_CLASS_MAP[status] || HIGHLIGHT_CLASS_MAP["Topic Gap"],
+          className:
+            HIGHLIGHT_CLASS_MAP[status] || HIGHLIGHT_CLASS_MAP["Topic Gap"],
         };
       });
 
     window.dispatchEvent(new CustomEvent("ce:highlightRules", { detail: rules }));
   }, [liveKeywords]);
 
-  // keep drawer "selected" row in sync when counts change
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selected, setSelected] = useState(null);
 
   useEffect(() => {
     if (!drawerOpen || !selected) return;
     const fresher = liveKeywords.find((it) => it.id === selected.id);
-    if (fresher && (fresher.used !== selected.used || fresher.mine !== selected.mine)) {
+    if (
+      fresher &&
+      (fresher.used !== selected.used || fresher.mine !== selected.mine)
+    ) {
       setSelected(fresher);
     }
   }, [drawerOpen, selected, liveKeywords]);
-
-  /* ===========================
-     Filters
-     =========================== */
 
   const [kwFilter, setKwFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("All Topics");
@@ -822,21 +788,40 @@ export default function SeoAdvancedOptimize({
   const STATUS_OPTIONS = [
     { value: "All", label: "All", dot: STATUS_STYLES.All.dot },
     { value: "Completed", label: "Completed", dot: STATUS_STYLES.Completed.dot },
-    { value: "In Progress", label: "In Progress", dot: STATUS_STYLES["In Progress"].dot },
+    {
+      value: "In Progress",
+      label: "In Progress",
+      dot: STATUS_STYLES["In Progress"].dot,
+    },
     { value: "Overuse", label: "Overuse", dot: STATUS_STYLES.Overuse.dot },
-    { value: "Topic Gap", label: "Topic Gap", dot: STATUS_STYLES["Topic Gap"].dot },
+    {
+      value: "Topic Gap",
+      label: "Topic Gap",
+      dot: STATUS_STYLES["Topic Gap"].dot,
+    },
   ];
 
   const visible = useMemo(() => {
     const q = kwFilter.trim().toLowerCase();
     return liveKeywords.filter((k) => {
       const okText = !q || k.title.toLowerCase().includes(q);
-      const okType = typeFilter === "All Topics" || !typeFilter || k.type === typeFilter;
+      const okType =
+        typeFilter === "All Topics" || !typeFilter || k.type === typeFilter;
       const status = deriveStatus(k.used, k.recommended);
       const okStatus = statusFilter === "All" || status === statusFilter;
       return okText && okType && okStatus;
     });
   }, [liveKeywords, kwFilter, typeFilter, statusFilter]);
+
+  // ✅ ADDED: generation state (no external props needed)
+  const isGeneratingKeywords =
+    !drawerOpen &&
+    (
+      // if SEO has not arrived yet
+      !seoData ||
+      // if we have context and are actively fetching PX keywords but list still empty
+      (pxLoading && liveKeywords.length === 0)
+    );
 
   /* ===========================
      Render
@@ -879,8 +864,18 @@ export default function SeoAdvancedOptimize({
             />
           </div>
 
-          <PopoverSelect label="Type" value={typeFilter} onChange={setTypeFilter} options={TYPE_OPTIONS} />
-          <PopoverSelect label="Status" value={statusFilter} onChange={setStatusFilter} options={STATUS_OPTIONS} />
+          <PopoverSelect
+            label="Type"
+            value={typeFilter}
+            onChange={setTypeFilter}
+            options={TYPE_OPTIONS}
+          />
+          <PopoverSelect
+            label="Status"
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={STATUS_OPTIONS}
+          />
 
           <div className="flex items-end gap-2">
             <button
@@ -904,21 +899,36 @@ export default function SeoAdvancedOptimize({
 
       {!drawerOpen && (
         <div className="mt-3 space-y-2">
-          {visible.map((item) => (
-            <KeywordRow
-              key={item.id}
-              item={item}
-              onOpen={() => {
-                setSelected(item);
-                setDrawerOpen(true);
-              }}
-              onPaste={onPasteToEditor}
-            />
-          ))}
-          {visible.length === 0 && (
-            <div className="text-[12px] text-gray-500 dark:text-[var(--muted)] px-1 py-2">
-              No items match the current filters.
+          {/* ✅ ADDED: show loader message BEFORE results exist */}
+          {isGeneratingKeywords ? (
+            <div className="rounded-2xl border border-gray-200 bg-white px-3 py-5 text-center dark:border-[var(--border)] dark:bg-[var(--bg-panel)]">
+              <div className="inline-flex items-center gap-2 text-[12px] font-medium text-gray-700 dark:text-[var(--text-primary)]">
+                <Loader2 size={16} className="animate-spin text-gray-500" />
+                Your keywords are being generated…
+              </div>
+              <div className="mt-1 text-[11px] text-gray-500 dark:text-[var(--muted)]">
+                This usually takes a few seconds.
+              </div>
             </div>
+          ) : (
+            <>
+              {visible.map((item) => (
+                <KeywordRow
+                  key={item.id}
+                  item={item}
+                  onOpen={() => {
+                    setSelected(item);
+                    setDrawerOpen(true);
+                  }}
+                  onPaste={onPasteToEditor}
+                />
+              ))}
+              {visible.length === 0 && (
+                <div className="text-[12px] text-gray-500 dark:text-[var(--muted)] px-1 py-2">
+                  No items match the current filters.
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -927,13 +937,19 @@ export default function SeoAdvancedOptimize({
         <div className="mt-1 rounded-2xl border border-gray-200 bg-white p-3 dark:border-[var(--border)] dark:bg-[var(--bg-panel)]">
           <DrawerHeader
             title={selected.title}
-            countText={`${selected.sources} Search result${selected.sources === 1 ? "" : "s"} mention this topic`}
+            countText={`${selected.sources} Search result${
+              selected.sources === 1 ? "" : "s"
+            } mention this topic`}
             onClose={() => {
               setDrawerOpen(false);
               setSelected(null);
             }}
           />
-          <StatTriplet mine={selected.mine} avg={selected.avg} results={selected.results} />
+          <StatTriplet
+            mine={selected.mine}
+            avg={selected.avg}
+            results={selected.results}
+          />
           <div className="mt-3 space-y-2">
             {(selected.links || []).map((l, i) => (
               <SourceResult

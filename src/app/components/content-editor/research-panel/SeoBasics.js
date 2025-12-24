@@ -179,6 +179,12 @@ export default function SeoBasics({
   const [activeIndex, setActiveIndex] = useState(-1);
   const [doneMap, setDoneMap] = useState(Array(SEARCH_STEPS.length).fill(false));
 
+  // ✅ NEW: local touched/error state for the input
+  const [touched, setTouched] = useState(false);
+
+  const trimmedQuery = (query || "").trim();
+  const canStart = trimmedQuery.length > 0 && phase === "idle"; // keep strict: only clickable in idle
+
   useEffect(() => {
     if (phase !== "searching") return;
     setActiveIndex(0);
@@ -209,10 +215,15 @@ export default function SeoBasics({
       cancelled = true;
       if (typeof cleanup === "function") cleanup();
     };
-  }, [phase, setPhase, SEARCH_STEPS.length]); // ← ESLint-safe deps
+  }, [phase, setPhase, SEARCH_STEPS.length]);
 
   const handleStart = () => {
-    onStart?.(query);
+    const q = trimmedQuery;
+    if (!q) {
+      setTouched(true);
+      return;
+    }
+    onStart?.(q);
     setPhase("searching");
   };
 
@@ -224,21 +235,26 @@ export default function SeoBasics({
           {safeBasics.title || "Research"}
         </h3>
         <p className="mt-3 mb-5 text-center text-[12px] leading-relaxed text-gray-600">
-          {safeBasics.description ||
-            "Process the top 20 Google search results for your keyword."}
+          {safeBasics.description || "Process the top 20 Google search results for your keyword."}
         </p>
 
         <div className="mx-auto w-full max-w-[420px]">
           <div className="relative">
             <input
               value={query}
-              onChange={(e) => onQueryChange?.(e.target.value)}
+              onChange={(e) => {
+                onQueryChange?.(e.target.value);
+                if (!touched) setTouched(true);
+              }}
+              onBlur={() => setTouched(true)}
               placeholder={
-                safeBasics.placeholder ||
-                currentPage?.primaryKeyword?.trim() ||
-                "Enter search query"
+                // ✅ CHANGE: no currentPage.primaryKeyword in idle placeholder
+                safeBasics.placeholder || "Enter search query"
               }
-              className="w-full h-9 rounded-lg border border-gray-200 bg-white px-8 pr-10 text-sm outline-none focus:border-blue-300"
+              aria-invalid={touched && !trimmedQuery}
+              className={`w-full h-9 rounded-lg border bg-white px-8 pr-10 text-sm outline-none focus:border-blue-300 ${
+                touched && !trimmedQuery ? "border-rose-300" : "border-gray-200"
+              }`}
             />
             <SearchIcon size={14} className="absolute left-2 top-2.5 text-gray-500" />
             <button
@@ -250,9 +266,26 @@ export default function SeoBasics({
             </button>
           </div>
 
+          {/* ✅ NEW: helper text */}
+          {touched && !trimmedQuery ? (
+            <div className="mt-2 text-[11px] text-rose-600 text-center">
+              Please enter a keyword to start.
+            </div>
+          ) : (
+            <div className="mt-2 text-[11px] text-gray-500 text-center">
+              Enter a keyword, then click Start.
+            </div>
+          )}
+
           <button
             onClick={handleStart}
-            className="mt-5 mx-auto block rounded-full border border-blue-300 px-6 py-2 text-[12px] font-medium text-blue-600 hover:bg-blue-50"
+            disabled={!canStart}
+            className={`mt-4 mx-auto block rounded-full border px-6 py-2 text-[12px] font-medium transition
+              ${
+                canStart
+                  ? "border-blue-300 text-blue-600 hover:bg-blue-50"
+                  : "border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50"
+              }`}
           >
             Start
           </button>
@@ -271,11 +304,9 @@ export default function SeoBasics({
           <Pill tone="info">Reference found</Pill>
         </div>
 
+        {/* ✅ CHANGE: do NOT fallback to JSON/currentPage keyword here either */}
         <div className="mt-4 text-[12px] text-gray-900 font-semibold">
-          {query?.trim() ||
-            currentPage?.ui?.query ||
-            currentPage?.primaryKeyword ||
-            "Content marketing strategies"}
+          {trimmedQuery || "—"}
         </div>
 
         <div className="mt-3 space-y-2">
@@ -317,9 +348,7 @@ export default function SeoBasics({
             icon={ListChecks}
             title="Basic SEO"
             statusTone="good"
-            statusText={
-              safeBasics.basicSEO?.length ? "All Good" : "No Data"
-            }
+            statusText={safeBasics.basicSEO?.length ? "All Good" : "No Data"}
             defaultOpen
           >
             <div className="space-y-1.5">
@@ -344,9 +373,7 @@ export default function SeoBasics({
             title="Additional"
             statusTone={safeBasics.additional?.length ? "warn" : "default"}
             statusText={
-              safeBasics.additional?.length
-                ? `${safeBasics.additional.length} Tips`
-                : "No Data"
+              safeBasics.additional?.length ? `${safeBasics.additional.length} Tips` : "No Data"
             }
             defaultOpen
           >
@@ -379,9 +406,7 @@ export default function SeoBasics({
               <ResultItem
                 type="error"
                 onFix={() =>
-                  onPasteToEditor?.(
-                    "Add a clear statement about how these tools improve rankings."
-                  )
+                  onPasteToEditor?.("Add a clear statement about how these tools improve rankings.")
                 }
               >
                 The first paragraph does not directly address the user’s search intent.
@@ -410,9 +435,7 @@ export default function SeoBasics({
               {safeBasics.titleReadability?.expansion ? (
                 <div
                   className="mt-2 rounded-md border border-gray-200 bg-gray-50 p-2 text-[12px] text-gray-700"
-                  dangerouslySetInnerHTML={{
-                    __html: safeBasics.titleReadability.expansion,
-                  }}
+                  dangerouslySetInnerHTML={{ __html: safeBasics.titleReadability.expansion }}
                 />
               ) : null}
             </div>
@@ -439,9 +462,7 @@ export default function SeoBasics({
               {safeBasics.contentReadability?.expansion ? (
                 <div
                   className="mt-2 rounded-md border border-gray-200 bg-gray-50 p-2 text-[12px] text-gray-700"
-                  dangerouslySetInnerHTML={{
-                    __html: safeBasics.contentReadability.expansion,
-                  }}
+                  dangerouslySetInnerHTML={{ __html: safeBasics.contentReadability.expansion }}
                 />
               ) : null}
             </div>

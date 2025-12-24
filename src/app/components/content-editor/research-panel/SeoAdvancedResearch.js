@@ -1,8 +1,14 @@
 // components/content-editor/SeoAdvancedResearch.js
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { Sparkles, Plus, MoreHorizontal, Copy as CopyIcon } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import {
+  Sparkles,
+  Plus,
+  MoreHorizontal,
+  Copy as CopyIcon,
+  Loader2, // ✅ ADDED
+} from "lucide-react";
 
 /* ===============================
    UI atoms (theme-aware)
@@ -200,6 +206,25 @@ function SectionLabel({ children }) {
 }
 
 /* ===============================
+   NEW: Unified "generating" UI
+================================ */
+function GeneratingState({ title, subtitle }) {
+  return (
+    <div className="rounded-2xl border border-[var(--border)] bg-white px-3 py-5 text-center dark:bg-[var(--bg-panel)]">
+      <div className="inline-flex items-center gap-2 text-[12px] font-medium text-gray-700 dark:text-[var(--text-primary)]">
+        <Loader2 size={16} className="animate-spin text-gray-500" />
+        {title}
+      </div>
+      {subtitle ? (
+        <div className="mt-1 text-[11px] text-gray-500 dark:text-[var(--muted)]">
+          {subtitle}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ===============================
    Helpers (API-only version)
 ================================ */
 
@@ -253,15 +278,9 @@ function extractHeadingsFromHtml(html) {
       if (!t) return;
       out.push({ level, title: t });
     };
-    doc.querySelectorAll("h1").forEach((node) =>
-      push("H1", node.textContent)
-    );
-    doc.querySelectorAll("h2").forEach((node) =>
-      push("H2", node.textContent)
-    );
-    doc.querySelectorAll("h3").forEach((node) =>
-      push("H3", node.textContent)
-    );
+    doc.querySelectorAll("h1").forEach((node) => push("H1", node.textContent));
+    doc.querySelectorAll("h2").forEach((node) => push("H2", node.textContent));
+    doc.querySelectorAll("h3").forEach((node) => push("H3", node.textContent));
     return out;
   } catch {
     return [];
@@ -340,10 +359,7 @@ function buildCompetitors(seoData) {
     const estimatedTrafficK =
       Math.round(
         (Number(
-          item.traffic ??
-            item.estimatedTraffic ??
-            item.organic_traffic ??
-            0
+          item.traffic ?? item.estimatedTraffic ?? item.organic_traffic ?? 0
         ) || 0) / 1000
       ) || null;
     const commonKeywords =
@@ -406,26 +422,29 @@ function buildHeatmaps(seoData, outline) {
       if (!key) return;
       map.set(key, (map.get(key) || 0) + 1);
     });
-    heat.headingsFrequency = Array.from(map.entries()).map(
-      ([heading, count]) => ({ heading, count })
-    );
+    heat.headingsFrequency = Array.from(map.entries()).map(([heading, count]) => ({
+      heading,
+      count,
+    }));
   }
 
   // Term heat from DataForSEO topKeywords
   const kws = seoData?.dataForSeo?.topKeywords || [];
-  heat.termHeat = kws.map((k) => {
-    const term = k.keyword || k.key || k.term || "";
-    const score =
-      k.searchVolume ??
-      k.search_volume ??
-      k.volume ??
-      k.traffic ??
-      k.estimatedTraffic ??
-      k.keywordDifficulty ??
-      k.difficulty ??
-      0;
-    return { term, score };
-  }).filter((r) => r.term);
+  heat.termHeat = kws
+    .map((k) => {
+      const term = k.keyword || k.key || k.term || "";
+      const score =
+        k.searchVolume ??
+        k.search_volume ??
+        k.volume ??
+        k.traffic ??
+        k.estimatedTraffic ??
+        k.keywordDifficulty ??
+        k.difficulty ??
+        0;
+      return { term, score };
+    })
+    .filter((r) => r.term);
 
   // SERP Feature coverage from Serper + DataForSEO serpFeatures
   const fSerper = seoData?.serp?.serpFeatures || {};
@@ -439,8 +458,7 @@ function buildHeatmaps(seoData, outline) {
   ];
 
   heat.serpFeatureCoverage = features.map(([key, label]) => {
-    const count =
-      Number(fSerper[key] ?? 0) + Number(fDfs[key] ?? 0);
+    const count = Number(fSerper[key] ?? 0) + Number(fDfs[key] ?? 0);
     return {
       feature: label,
       presence: count > 0,
@@ -462,8 +480,7 @@ function buildHeatmaps(seoData, outline) {
       let avgPosition = 0;
       if (serpMentions > 0) {
         const sumPos = matches.reduce((sum, r, idx) => {
-          const pos =
-            Number(r.position ?? r.rank ?? r.index ?? idx + 1) || 1;
+          const pos = Number(r.position ?? r.rank ?? r.index ?? idx + 1) || 1;
           return sum + pos;
         }, 0);
         avgPosition = Math.round(sumPos / serpMentions);
@@ -536,10 +553,7 @@ export default function SeoAdvancedResearch({
   /* ===============================
      Competitors & Heatmaps
   ================================ */
-  const competitors = useMemo(
-    () => buildCompetitors(seoData),
-    [seoData]
-  );
+  const competitors = useMemo(() => buildCompetitors(seoData), [seoData]);
   const heatmaps = useMemo(
     () => buildHeatmaps(seoData, outline),
     [seoData, outline]
@@ -548,6 +562,17 @@ export default function SeoAdvancedResearch({
   // Loading / error: SEO data is optional, but when it's explicitly loading / errored
   const loading = !!seoLoading;
   const error = seoError || "";
+
+  // ✅ ADDED: "Generating" flags (show only BEFORE data appears)
+  const isGeneratingCompetitors = !error && loading && competitors.length === 0;
+
+  const isGeneratingHeatmaps =
+    !error &&
+    loading &&
+    !heatmaps.headingsFrequency.length &&
+    !heatmaps.termHeat.length &&
+    !heatmaps.serpFeatureCoverage.length &&
+    !heatmaps.headingSerpMatrix.length;
 
   /* ===============================
      Render
@@ -666,7 +691,7 @@ export default function SeoAdvancedResearch({
               so we only show loading if SEO is loading AND we have no headings yet. */}
           {seoLoading && outline.length === 0 ? (
             <div className="grid place-items-center rounded-xl border border-dashed border-[var(--border)] py-10 text-[var(--muted)] text-[12px]">
-              Loading outline…
+              Building outline…
             </div>
           ) : error && outline.length === 0 ? (
             <div className="grid place-items-center rounded-xl border border-dashed border-[var(--border)] py-10 text-[var(--muted)] text-[12px]">
@@ -709,7 +734,13 @@ export default function SeoAdvancedResearch({
       {/* Competitors */}
       {tab === "competitors" && (
         <div className="mt-3 space-y-3">
-          {loading && competitors.length === 0 ? (
+          {/* ✅ ADDED: loader (only before data exists) */}
+          {isGeneratingCompetitors ? (
+            <GeneratingState
+              title="Generating competitor insights…"
+              subtitle="This usually takes a few seconds."
+            />
+          ) : loading && competitors.length === 0 ? (
             <div className="grid place-items-center rounded-xl border border-dashed border-[var(--border)] py-10 text-[var(--muted)] text-[12px]">
               Loading competitors…
             </div>
@@ -775,20 +806,18 @@ export default function SeoAdvancedResearch({
                     label: "Sample URLs",
                     render: (val) => (
                       <div className="flex flex-wrap gap-2">
-                        {(val || [])
-                          .slice(0, 3)
-                          .map((u, idx) => (
-                            <a
-                              key={idx}
-                              href={u}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="truncate max-w-[16rem] text-[11px] underline text-[var(--text-primary)]"
-                              title={u}
-                            >
-                              {u}
-                            </a>
-                          ))}
+                        {(val || []).slice(0, 3).map((u, idx) => (
+                          <a
+                            key={idx}
+                            href={u}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="truncate max-w-[16rem] text-[11px] underline text-[var(--text-primary)]"
+                            title={u}
+                          >
+                            {u}
+                          </a>
+                        ))}
                       </div>
                     ),
                   },
@@ -806,7 +835,13 @@ export default function SeoAdvancedResearch({
           className="mt-3 overflow-y-auto pr-1 space-y-4"
           style={{ maxHeight: maxListHeight }}
         >
-          {loading && !error && !heatmaps.termHeat.length ? (
+          {/* ✅ ADDED: loader (only before data exists) */}
+          {isGeneratingHeatmaps ? (
+            <GeneratingState
+              title="Generating heatmaps…"
+              subtitle="This usually takes a few seconds."
+            />
+          ) : loading && !error && !heatmaps.termHeat.length ? (
             <div className="grid place-items-center rounded-xl border border-dashed border-[var(--border)] py-10 text-[var(--muted)] text-[12px]">
               Loading heatmaps…
             </div>
@@ -819,8 +854,7 @@ export default function SeoAdvancedResearch({
             !heatmaps.serpFeatureCoverage.length &&
             !heatmaps.headingSerpMatrix.length ? (
             <div className="grid place-items-center rounded-xl border border-dashed border-[var(--border)] py-10 text-[var(--muted)] text-[12px]">
-              {ui?.emptyStates?.heatmaps ??
-                "No heatmap data from SEO API."}
+              {ui?.emptyStates?.heatmaps ?? "No heatmap data from SEO API."}
             </div>
           ) : (
             <>

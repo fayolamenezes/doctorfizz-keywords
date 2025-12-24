@@ -7,6 +7,7 @@ import {
   Search as SearchIcon,
   X,
   Copy as CopyIcon,
+  Loader2, // ✅ ADDED
 } from "lucide-react";
 
 function IconHintButton({
@@ -346,6 +347,12 @@ export default function SeoAdvancedLinks({
     (r.domain || "").toLowerCase().includes(kwFilter.trim().toLowerCase())
   );
 
+  // ✅ ADDED: "generating" state (only show when nothing to show yet)
+  const isGeneratingLinks =
+    !error &&
+    (loading || !seoData) &&
+    filtered.length === 0;
+
   return (
     <div className="mt-1 rounded-2xl border border-[var(--border)] bg-white p-4 dark:bg-[var(--bg-panel)]">
       <div className="flex items-center gap-6 border-b border-[var(--border)] px-1">
@@ -408,29 +415,44 @@ export default function SeoAdvancedLinks({
       </div>
 
       <div className="mt-3 space-y-3">
-        {loading && (
-          <div className="text-[12px] text-gray-500 dark:text-[var(--muted)]">
-            Loading link data…
+        {/* ✅ ADDED: nicer loading UI before results */}
+        {isGeneratingLinks ? (
+          <div className="rounded-2xl border border-[var(--border)] bg-white px-3 py-5 text-center dark:bg-[var(--bg-panel)]">
+            <div className="inline-flex items-center gap-2 text-[12px] font-medium text-gray-700 dark:text-[var(--text-primary)]">
+              <Loader2 size={16} className="animate-spin text-gray-500" />
+              Your links are being generated…
+            </div>
+            <div className="mt-1 text-[11px] text-gray-500 dark:text-[var(--muted)]">
+              This usually takes a few seconds.
+            </div>
           </div>
-        )}
-        {!loading && error && (
-          <div className="text-[12px] text-rose-600">
-            Failed to load: {error}
-          </div>
-        )}
-        {!loading &&
-          !error &&
-          filtered.map((r, idx) => (
-            <LinkRow
-              key={idx}
-              {...r}
-              onPaste={(text) => onPasteToEditor?.(text)}
-            />
-          ))}
-        {!loading && !error && filtered.length === 0 && (
-          <div className="text-[12px] text-gray-500 dark:text-[var(--muted)] px-1 py-2">
-            No links match the current filter.
-          </div>
+        ) : (
+          <>
+            {loading && (
+              <div className="text-[12px] text-gray-500 dark:text-[var(--muted)]">
+                Loading link data…
+              </div>
+            )}
+            {!loading && error && (
+              <div className="text-[12px] text-rose-600">
+                Failed to load: {error}
+              </div>
+            )}
+            {!loading &&
+              !error &&
+              filtered.map((r, idx) => (
+                <LinkRow
+                  key={idx}
+                  {...r}
+                  onPaste={(text) => onPasteToEditor?.(text)}
+                />
+              ))}
+            {!loading && !error && filtered.length === 0 && (
+              <div className="text-[12px] text-gray-500 dark:text-[var(--muted)] px-1 py-2">
+                No links match the current filter.
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

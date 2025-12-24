@@ -1,12 +1,23 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { ChevronRight, Search as SearchIcon, RefreshCw, Copy as CopyIcon } from "lucide-react";
+import {
+  ChevronRight,
+  Search as SearchIcon,
+  RefreshCw,
+  Copy as CopyIcon,
+  Loader2, // ✅ ADDED
+} from "lucide-react";
 
 /* ===============================
    Small Helpers
 ================================ */
-function IconHintButton({ onClick, label = "Paste to editor", size = 18, className = "" }) {
+function IconHintButton({
+  onClick,
+  label = "Paste to editor",
+  size = 18,
+  className = "",
+}) {
   return (
     <div
       className={`relative opacity-0 pointer-events-none transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto ${className}`}
@@ -48,10 +59,16 @@ function BrandDot({ label }) {
   );
 }
 
-function EmptyState({ title = "No results", subtitle = "Try a different filter or tab.", onRetry }) {
+function EmptyState({
+  title = "No results",
+  subtitle = "Try a different filter or tab.",
+  onRetry,
+}) {
   return (
     <div className="flex flex-col items-center justify-center py-10 text-center gap-2">
-      <div className="text-[13px] font-semibold text-[var(--text-primary)]">{title}</div>
+      <div className="text-[13px] font-semibold text-[var(--text-primary)]">
+        {title}
+      </div>
       <div className="text-[12px] text-[var(--muted)]">{subtitle}</div>
       {onRetry && (
         <button
@@ -142,32 +159,73 @@ export default function SeoAdvancedFaqs({
   seoData,
   seoLoading,
   seoError,
+  /** Optional FAQ fallbacks (from dataset) */
+  faqs,
 }) {
-  const [faqTab, setFaqTab] = useState("serp"); // serp | pa | quora | reddit
+  // ✅ CHANGED: default to PAA since Perplexity FAQs are shown there
+  const [faqTab, setFaqTab] = useState("pa"); // serp | pa | quora | reddit
   const [kwFilter, setKwFilter] = useState("");
 
   const loading = !!seoLoading;
   const error = seoError || "";
 
-  // Effective domain: prop wins, else infer from authority/serper
+  // ✅ CHANGED: Perplexity-only. Ignore `faqs` prop completely (no fallback).
+  const effectiveFaqs = useMemo(() => {
+    if (seoData?.faqs && typeof seoData.faqs === "object") return seoData.faqs;
+    return {};
+  }, [seoData]);
+
+  // Effective domain: prop wins, else infer from authority/serp/serper
   const effectiveDomain = useMemo(() => {
     if (domain) return String(domain).toLowerCase();
-    if (seoData?.authority?.domain) return String(seoData.authority.domain).toLowerCase();
+    if (seoData?.authority?.domain)
+      return String(seoData.authority.domain).toLowerCase();
+
+    const firstTop = seoData?.serp?.topResults?.[0]?.link;
+    if (firstTop) return hostFromUrl(firstTop).toLowerCase();
+
     const firstOrganic = seoData?.serper?.organic?.[0]?.link;
     if (firstOrganic) return hostFromUrl(firstOrganic).toLowerCase();
+
     return "";
   }, [domain, seoData]);
 
   /* ===============================
-     Build FAQ rows from seoData.serper
+     Build FAQ rows (PERPLEXITY-ONLY)
+     - No SERP/Serper fallback
+     - No dataset fallback
      =============================== */
   const { serpRows, paRows, quoraRows, redditRows } = useMemo(() => {
-    const serper = seoData?.serper || {};
-    const organic = Array.isArray(serper.organic) ? serper.organic : [];
-    const peopleAlsoAsk = Array.isArray(serper.peopleAlsoAsk)
-      ? serper.peopleAlsoAsk
-      : Array.isArray(serper.relatedQuestions)
-      ? serper.relatedQuestions
+    // Keep existing structure, but disable non-Perplexity sources.
+    const serpBlock = seoData?.serp || seoData?.serper || {};
+
+    const apiOrganic = Array.isArray(serpBlock.topResults)
+      ? serpBlock.topResults
+      : Array.isArray(serpBlock.organic)
+      ? serpBlock.organic
+      : [];
+
+    // Serper "People also ask" (DISABLED: no fallback)
+    const apiPaa = Array.isArray(serpBlock.peopleAlsoAsk)
+      ? serpBlock.peopleAlsoAsk
+      : Array.isArray(serpBlock.relatedQuestions)
+      ? serpBlock.relatedQuestions
+      : [];
+
+    // Optional dataset fallbacks (DISABLED: no fallback)
+    const fbSerp = Array.isArray(effectiveFaqs?.serp) ? effectiveFaqs.serp : [];
+    const fbPaa = Array.isArray(effectiveFaqs?.peopleAlsoAsk)
+      ? effectiveFaqs.peopleAlsoAsk
+      : [];
+    const fbQuora = Array.isArray(effectiveFaqs?.quora) ? effectiveFaqs.quora : [];
+    const fbReddit = Array.isArray(effectiveFaqs?.reddit) ? effectiveFaqs.reddit : [];
+
+    // ✅ CHANGED: SERP tab should not show anything (Perplexity-only requirement)
+    const organic = [];
+
+    // ✅ CHANGED: PAA comes ONLY from Perplexity output
+    const peopleAlsoAsk = Array.isArray(seoData?.faqs?.peopleAlsoAsk)
+      ? seoData.faqs.peopleAlsoAsk
       : [];
 
     const serp = [];
@@ -175,21 +233,27 @@ export default function SeoAdvancedFaqs({
     const quora = [];
     const reddit = [];
 
-    // SERP rows from organic results
+    // SERP list disabled (kept loop intact but organic is empty)
     for (const item of organic) {
       const url = item.link || item.url || "";
       const host = hostFromUrl(url);
       const lcHost = host.toLowerCase();
+
       const dMatch = effectiveDomain ? lcHost.includes(effectiveDomain) : true;
+
       const qMatch = queryFilter
-        ? (host + " " + (item.title || "")).toLowerCase().includes(queryFilter.toLowerCase())
+        ? (host + " " + (item.title || item.question || "")).toLowerCase().includes(
+            queryFilter.toLowerCase()
+          )
         : true;
+
       if (!dMatch || !qMatch) continue;
 
       const title = pickString(item.title, item.question, url);
       if (!title) continue;
 
-      const fullText = item.snippet || item.description || "";
+      const fullText =
+        item.snippet || item.description || item.answer || item.text || "";
 
       serp.push({
         iconLabel: host || "G",
@@ -199,7 +263,6 @@ export default function SeoAdvancedFaqs({
         link: url,
       });
 
-      // Quora/Reddit from organic domains
       if (lcHost.includes("quora.com")) {
         quora.push({
           iconLabel: "Q",
@@ -217,21 +280,58 @@ export default function SeoAdvancedFaqs({
       }
     }
 
-    // People Also Ask rows
+    // ✅ CHANGED: Perplexity-only PAA/FAQ rows
+    const isPerplexityMain = true;
+
     for (const item of peopleAlsoAsk) {
       const q = pickString(item.question, item.title);
       if (!q) continue;
+
+      const answer = pickString(item.answer, item.snippet, item.text);
+      const link = pickString(item.url, item.link);
+
       paa.push({
-        iconLabel: "G",
-        title: `People also ask: ${q}`,
-        source: "Google",
-        fullText: item.snippet || item.answer || "",
-        link: item.url || "",
+        iconLabel: isPerplexityMain ? "P" : "G",
+        title: isPerplexityMain ? `FAQ: ${q}` : `People also ask: ${q}`,
+        source: isPerplexityMain ? "Perplexity" : "Google",
+        fullText: answer,
+        link,
       });
     }
 
+    // Quora / Reddit fallbacks (DISABLED: no fallback)
+    if (!quora.length && fbQuora.length) {
+      for (const item of fbQuora) {
+        const url = item.link || item.url || "";
+        const host = hostFromUrl(url) || "Quora";
+        const title = pickString(item.title, item.question, url);
+        if (!title) continue;
+        quora.push({
+          iconLabel: "Q",
+          title,
+          source: host,
+          link: url,
+        });
+      }
+    }
+
+    if (!reddit.length && fbReddit.length) {
+      for (const item of fbReddit) {
+        const url = item.link || item.url || "";
+        const host = hostFromUrl(url) || "Reddit";
+        const title = pickString(item.title, item.question, url);
+        if (!title) continue;
+        reddit.push({
+          iconLabel: "R",
+          title,
+          source: host,
+          link: url,
+        });
+      }
+    }
+
     return { serpRows: serp, paRows: paa, quoraRows: quora, redditRows: reddit };
-  }, [seoData, effectiveDomain, queryFilter]);
+  }, [seoData, effectiveFaqs, effectiveDomain, queryFilter]);
 
   const filtered = useMemo(() => {
     const rows =
@@ -245,17 +345,32 @@ export default function SeoAdvancedFaqs({
 
     if (!kwFilter) return rows;
     const q = kwFilter.toLowerCase();
-    return rows.filter((r) => r.title.toLowerCase().includes(q));
+    return rows.filter((r) => (r?.title || "").toLowerCase().includes(q));
   }, [faqTab, kwFilter, serpRows, paRows, quoraRows, redditRows]);
 
   function handlePaste(text, row) {
+    const cleanTitle = String(row?.title || text || "").trim();
+
+    // If title has a prefix ("FAQ:" / "People also ask:"), remove it for paste Q line.
+    const question = cleanTitle
+      .replace(/^People also ask:\s*/i, "")
+      .replace(/^FAQ:\s*/i, "")
+      .trim();
+
     const lines = [
-      row?.title ? `Q: ${row.title}` : text,
+      question ? `Q: ${question}` : cleanTitle,
       row?.fullText ? `A: ${row.fullText}` : undefined,
       row?.link ? `Source: ${row.link}` : undefined,
     ].filter(Boolean);
+
     onPasteToEditor?.(lines.join("\n"));
   }
+
+  // ✅ "generating" state (show only when nothing to show yet)
+  const isGeneratingFaqs =
+    !error &&
+    (loading || !seoData) &&
+    filtered.length === 0;
 
   /* ===============================
      Render
@@ -293,19 +408,29 @@ export default function SeoAdvancedFaqs({
           value={kwFilter}
           onChange={(e) => setKwFilter(e.target.value)}
         />
-        <SearchIcon size={13} className="absolute left-2.5 top-2 text-[var(--muted)]" />
+        <SearchIcon
+          size={13}
+          className="absolute left-2.5 top-2 text-[var(--muted)]"
+        />
       </div>
 
       {/* Body (scrollable FAQ list) */}
       <div className="mt-3 min-h-[120px]">
-        {loading ? (
-          <div className="py-6 text-center text-[12px] text-[var(--muted)]">Loading FAQs…</div>
+        {isGeneratingFaqs ? (
+          <div className="rounded-2xl border border-[var(--border)] bg-white px-3 py-5 text-center dark:bg-[var(--bg-panel)]">
+            <div className="inline-flex items-center gap-2 text-[12px] font-medium text-gray-700 dark:text-[var(--text-primary)]">
+              <Loader2 size={16} className="animate-spin text-gray-500" />
+              Your FAQs are being generated…
+            </div>
+            <div className="mt-1 text-[11px] text-gray-500 dark:text-[var(--muted)]">
+              This usually takes a few seconds.
+            </div>
+          </div>
         ) : error ? (
           <EmptyState
             title="Couldn't load FAQs"
             subtitle={error}
             onRetry={() => {
-              // let parent re-trigger /api/seo; local reload is a simple fallback
               location.reload();
             }}
           />
