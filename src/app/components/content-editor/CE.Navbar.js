@@ -41,10 +41,21 @@ export default function CENavbar({
     }
   }, [title, editing]);
 
+  /**
+   * ✅ FIX:
+   * New Document should be truly empty (no whitespace content),
+   * and should carry an explicit "new doc" intent + fresh docId so
+   * editor/autosave/SEO loaders don't treat it like a fetch state.
+   */
   const handleNewDoc = () => {
     window.dispatchEvent(
       new CustomEvent("content-editor:open", {
-        detail: { title: "Untitled", content: " " },
+        detail: {
+          title: "Untitled",
+          content: "", // ✅ truly empty (NOT " ")
+          mode: "new", // ✅ explicit intent
+          docId: `new-${Date.now()}`, // ✅ unique per click
+        },
       })
     );
   };

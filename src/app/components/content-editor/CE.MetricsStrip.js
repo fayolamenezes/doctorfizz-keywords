@@ -58,10 +58,10 @@ function Bar({ pct = 0, tone = "default", className = "" }) {
 
   return (
     <div
-      className={`mt-1 h-2.5 rounded bg-gray-200 border border-gray-300 overflow-hidden ${className}`}
+      className={`mt-1 h-1.5 shrink-0 rounded bg-gray-200 border border-gray-300 overflow-hidden ${className}`}
     >
       <div
-        className="h-full rounded transition-all duration-500"
+        className="h-full shrink-0 rounded transition-all duration-500"
         style={{
           width: `${width}%`,
           minWidth: width > 0 ? "2px" : "0px",
@@ -144,7 +144,8 @@ function WordcountCard({ count = 0, target = 1200 }) {
 
         <div className="mb-1 flex items-center justify-between">
           <div className="text-[14px] font-bold text-[var(--text-primary)] tabular-nums">
-            {Math.round(animCount)} <span className="font-normal">/ {target}</span>
+            {Math.round(animCount)}{" "}
+            <span className="font-normal">/ {target}</span>
           </div>
           <div className="text-[11.5px] font-semibold text-[var(--muted)] opacity-70">
             {pctText(animPct)}
@@ -183,7 +184,10 @@ function SeoPill({ active, title, Icon, onClick, disabled }) {
               : "border-gray-300 bg-gray-100"
           }`}
         >
-          <Icon size={16} className={active ? "text-orange-600" : "text-gray-500"} />
+          <Icon
+            size={16}
+            className={active ? "text-orange-600" : "text-gray-500"}
+          />
         </span>
         <div className="leading-tight min-w-0">
           <div
@@ -227,10 +231,15 @@ function SeoPillMobile({ active, title, Icon, onClick, disabled }) {
         <span
           className={[
             "grid place-items-center h-4 w-4 rounded-full border",
-            active ? "border-orange-200 bg-orange-100" : "border-gray-300 bg-gray-100",
+            active
+              ? "border-orange-200 bg-orange-100"
+              : "border-gray-300 bg-gray-100",
           ].join(" ")}
         >
-          <Icon size={12} className={active ? "text-orange-600" : "text-gray-500"} />
+          <Icon
+            size={12}
+            className={active ? "text-orange-600" : "text-gray-500"}
+          />
         </span>
         <div className="leading-tight min-w-0">
           <div
@@ -257,7 +266,14 @@ function SeoPillMobile({ active, title, Icon, onClick, disabled }) {
 }
 
 /** Circular metric (ultra compact, perfectly centered & balanced) */
-function CircularStat({ pct = 0, label, ring = "#10B981", alt = false, count, target }) {
+function CircularStat({
+  pct = 0,
+  label,
+  ring = "#10B981",
+  alt = false,
+  count,
+  target,
+}) {
   const size = 48;
   const stroke = 4;
   const r = (size - stroke) / 2;
@@ -282,7 +298,14 @@ function CircularStat({ pct = 0, label, ring = "#10B981", alt = false, count, ta
   return (
     <div className="flex flex-col items-center">
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle cx={size / 2} cy={size / 2} r={r} stroke="#fff" strokeWidth={stroke} fill="#fff" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="#fff"
+          strokeWidth={stroke}
+          fill="#fff"
+        />
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -354,7 +377,9 @@ function MiniMetricBadge({ colorClass, bgClass, label, value }) {
       >
         {value}
       </span>
-      <span className={`text-[6px] leading-[1] font-semibold tracking-tight ${colorClass}`}>
+      <span
+        className={`text-[6px] leading-[1] font-semibold tracking-tight ${colorClass}`}
+      >
         {label}
       </span>
     </div>
@@ -507,7 +532,13 @@ export default function CEMetricsStrip({
             </div>
           ) : null}
           <CircularStat pct={lsiPct} label="LSI KEYWORDS" ring="#F59E0B" />
-          <CircularStat pct={wcPct} label="WORD COUNT" ring="#8B5CF6" count={wc} target={wcTarget} />
+          <CircularStat
+            pct={wcPct}
+            label="WORD COUNT"
+            ring="#8B5CF6"
+            count={wc}
+            target={wcTarget}
+          />
         </div>
       </div>
     </div>

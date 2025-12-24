@@ -1,4 +1,3 @@
-// components/content-editor/CE.ContentArea.js
 "use client";
 
 import React, {
@@ -8,7 +7,13 @@ import React, {
   useState,
   useCallback,
 } from "react";
-import { Menu, SquareStack, ChevronsUp, ChevronsDown } from "lucide-react";
+import {
+  Menu,
+  SquareStack,
+  ChevronsUp,
+  ChevronsDown,
+  RefreshCw,
+} from "lucide-react";
 import CEToolbar from "./CE.Toolbar";
 import CECanvas from "./CE.Canvas";
 import CEResearchPanel from "./CE.ResearchPanel";
@@ -24,7 +29,8 @@ function buildPhraseRegex(phrase) {
     .split(/\s+/)
     .filter(Boolean)
     .map((t) => {
-      if (t === "&" || t === "and" || t === "&amp;") return "(?:&|&amp;|and)";
+      if (t === "&" || t === "and" || t === "&amp;")
+        return "(?:&|&amp;|and)";
       return esc(t);
     });
   if (!tokens.length) return null;
@@ -295,17 +301,18 @@ export default function CEContentArea({
   );
 
   // ----- Keyword setup -----
+  // ✅ No placeholder keyword: if missing, treat as unset.
   const PRIMARY_KEYWORD = useMemo(
-    () => String(primaryKeyword || "content marketing").toLowerCase(),
+    () => String(primaryKeyword || "").toLowerCase().trim(),
     [primaryKeyword]
   );
 
+  // ✅ No placeholder LSI list: use provided, else empty.
   const LSI_KEYWORDS = useMemo(
     () =>
-      (Array.isArray(lsiKeywords) && lsiKeywords.length
-        ? lsiKeywords
-        : ["strategy", "SEO", "engagement", "conversion", "brand", "optimization"]
-      ).map((k) => String(k).toLowerCase()),
+      (Array.isArray(lsiKeywords) ? lsiKeywords : [])
+        .map((k) => String(k).toLowerCase().trim())
+        .filter(Boolean),
     [lsiKeywords]
   );
 
@@ -406,8 +413,12 @@ export default function CEContentArea({
           ...emptyMetrics,
           statuses: {
             wordCount: { label: "Empty", color: "text-[var(--muted)]" },
-            primaryKeyword: { label: "Needs Review", color: "text-red-600" },
-            lsiKeywords: { label: "Needs Review", color: "text-red-600" },
+            primaryKeyword: PRIMARY_KEYWORD
+              ? { label: "Needs Review", color: "text-red-600" }
+              : { label: "No keyword", color: "text-[var(--muted)]" },
+            lsiKeywords: LSI_KEYWORDS.length
+              ? { label: "Needs Review", color: "text-red-600" }
+              : { label: "—", color: "text-[var(--muted)]" },
           },
         }));
         emitMetricsThrottled(emptyMetrics);
@@ -417,9 +428,10 @@ export default function CEContentArea({
       const words = plain.split(/\s+/).filter(Boolean);
       const wordCount = words.length;
 
-      const pkRegex = buildPhraseRegex(PRIMARY_KEYWORD);
+      // ✅ If no primary keyword is set, keep PK score 0 and show "No keyword".
+      const pkRegex = PRIMARY_KEYWORD ? buildPhraseRegex(PRIMARY_KEYWORD) : null;
       const pkMatches = pkRegex ? (plain.match(pkRegex) || []).length : 0;
-      const pkScore = Math.min(100, pkMatches * 25);
+      const pkScore = PRIMARY_KEYWORD ? Math.min(100, pkMatches * 25) : 0;
 
       let lsiCovered = 0;
       for (const term of LSI_KEYWORDS) {
@@ -463,8 +475,12 @@ export default function CEContentArea({
               : wordCount >= Math.round((m.wordTarget || 1200) * 0.5)
               ? { label: "Moderate", color: "text-yellow-600" }
               : { label: "Needs Review", color: "text-red-600" },
-          primaryKeyword: status(pkScore),
-          lsiKeywords: status(lsiPct),
+          primaryKeyword: PRIMARY_KEYWORD
+            ? status(pkScore)
+            : { label: "No keyword", color: "text-[var(--muted)]" },
+          lsiKeywords: LSI_KEYWORDS.length
+            ? status(lsiPct)
+            : { label: "—", color: "text-[var(--muted)]" },
         },
       }));
 
@@ -590,6 +606,27 @@ export default function CEContentArea({
     });
   }, []);
 
+  /**
+   * ✅ FIX:
+   * Only show the loader when an SEO fetch was actually requested (not for a brand new doc).
+   */
+  const hasSeoRequest = Boolean(seoData) || Boolean(seoError);
+
+  // ✅ Optional loader: show while fetching SEO data and before we have any editor content.
+  const showEditorLoader =
+    Boolean(seoLoading) &&
+    hasSeoRequest &&
+    !(typeof localContent === "string" && localContent.trim().length > 0) &&
+    !(typeof content === "string" && content.trim().length > 0) &&
+    !(
+      typeof seoData?.content?.html === "string" &&
+      stripImagesKeepFormatting(seoData.content.html).trim().length > 0
+    ) &&
+    !(
+      typeof seoData?.content?.rawText === "string" &&
+      seoData.content.rawText.trim().length > 0
+    );
+
   return (
     <div
       className="
@@ -655,7 +692,24 @@ export default function CEContentArea({
           </button>
         </div>
 
-        <div className="bg-white">
+        <div className="bg-white relative">
+          {/* ✅ Loader overlay (blocks editing until fetched) */}
+          {showEditorLoader && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/80 backdrop-blur-[1px]">
+              <div className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                <RefreshCw className="h-4 w-4 animate-spin text-gray-600" />
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold text-gray-900">
+                    Fetching content & SEO signals…
+                  </div>
+                  <div className="text-[12px] text-gray-600">
+                    Waiting for live data before showing the editor.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <CECanvas
             ref={editorRef}
             docId={docId}

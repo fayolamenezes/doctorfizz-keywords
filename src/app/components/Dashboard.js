@@ -272,20 +272,20 @@ function formatCompactNumber(n) {
   return sign + Math.round(v).toString();
 }
 
-/** Small source pill with hover tooltip (used for GA4/GSC numbers beside big values) */
-function SourcePill({ label, value, source }) {
+/** Small source pill that shows ONLY a number; on hover it reveals the source (GA4/GSC). */
+function SourcePill({ value, source }) {
   return (
     <div className="relative group">
       <div
-        className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--input)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)] cursor-help"
-        aria-label={`Comes from ${source}`}
-        title={`Comes from ${source}`}
+        className="inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--input)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)] cursor-help tabular-nums"
+        aria-label={source}
+        title={source}
       >
-        {label}: {value}
+        {value}
       </div>
 
       <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-1 w-max -translate-x-1/2 rounded-md bg-black px-2 py-1 text-[11px] text-white opacity-0 shadow transition-opacity group-hover:opacity-100">
-        Comes from {source}
+        {source}
       </div>
     </div>
   );
@@ -2627,9 +2627,8 @@ const seoTableProg = Math.max(0, prog);
 
               {typeof googlePerf.ga4TrafficMonthly === "number" ? (
                 <SourcePill
-                  label="GA4"
                   value={formatCompactNumber(googlePerf.ga4TrafficMonthly)}
-                  source="Google Analytics"
+                  source="GA4"
                 />
               ) : null}
 
@@ -2697,9 +2696,8 @@ const seoTableProg = Math.max(0, prog);
 
               {typeof googlePerf.gscKeywordsTotal === "number" ? (
                 <SourcePill
-                  label="GSC"
                   value={formatCompactNumber(googlePerf.gscKeywordsTotal)}
-                  source="Google Search Console"
+                  source="GSC"
                 />
               ) : null}
             </div>
@@ -2811,9 +2809,8 @@ const seoTableProg = Math.max(0, prog);
 
                     {typeof googlePerf.ga4LeadsMonthly === "number" ? (
                       <SourcePill
-                        label="GA4"
                         value={formatCompactNumber(googlePerf.ga4LeadsMonthly)}
-                        source="Google Analytics"
+                        source="GA4"
                       />
                     ) : null}
                   </div>

@@ -157,7 +157,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   const PRIMARY_KEYWORD = useMemo(
     () =>
       norm(
-        data?.primaryKeyword || pageConfig?.primaryKeyword || "content marketing"
+        data?.primaryKeyword || pageConfig?.primaryKeyword || ""
       ),
     [data?.primaryKeyword, pageConfig?.primaryKeyword]
   );
@@ -212,6 +212,9 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   const [seo, setSeo] = useState(null);
   const [seoLoading, setSeoLoading] = useState(false);
   const [seoError, setSeoError] = useState("");
+
+  // ✅ New document mode: prevents SEO fetch + loader overlays on blank docs
+  const [isNewDoc, setIsNewDoc] = useState(false);
 
   /* ---------------------------
      ✅ Plagiarism helpers
@@ -318,6 +321,8 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   // ------------------------------------------------------------------
   // Resolve the canonical URL for this page and fetch unified SEO data
   const seoUrl = useMemo(() => {
+    // ✅ Don’t fetch SEO for a brand-new blank document
+    if (isNewDoc) return null;
     if (!pageDomain) return null;
 
     // Prefer explicit URL from data if provided
@@ -333,7 +338,18 @@ export default function ContentEditor({ data, onBackToDashboard }) {
 
     // Fallback: just the domain root
     return `https://${pageDomain}`;
-  }, [pageDomain, data?.url, data?.slug]);
+  }, [isNewDoc, pageDomain, data?.url, data?.slug]);
+
+// ✅ Exit “new doc” mode when a real document payload arrives
+useEffect(() => {
+  if (newDocRef.current) return;
+  const hasRealDoc =
+    Boolean(data?.slug) ||
+    Boolean(data?.id) ||
+    (typeof data?.content === "string" && data.content.trim().length > 0) ||
+    (typeof data?.title === "string" && data.title.trim().length > 0);
+  if (hasRealDoc) setIsNewDoc(false);
+}, [data?.slug, data?.id, data?.content, data?.title]);
 
   useEffect(() => {
     if (!seoUrl) return;
@@ -347,7 +363,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
 
         const payload = {
           url: seoUrl,
-          keyword: PRIMARY_KEYWORD || seoUrl,
+          keyword: PRIMARY_KEYWORD || query || seoUrl,
           countryCode: "in",
           languageCode: "en",
           depth: 10,
@@ -519,6 +535,16 @@ export default function ContentEditor({ data, onBackToDashboard }) {
         setSeoMode("basic");
         setLastEdited("just now");
         setBasicsUnlocked(false);
+
+// ✅ Mark as brand-new doc and clear any carry-over fetch state
+setIsNewDoc(true);
+setSeo(null);
+setSeoLoading(false);
+setSeoError("");
+setPlagiarismLoading(false);
+setPlagiarismSources([]);
+plagiarismInitRanRef.current = false;
+hydratedFromSeoRef.current = false;
         setMetrics((m) => ({
           ...m,
           plagiarism: 0,
@@ -562,6 +588,9 @@ export default function ContentEditor({ data, onBackToDashboard }) {
       }
     } catch {}
 
+    // ✅ If this isn’t a NEW doc boot, allow SEO fetches for real pages
+    if (!newDocRef.current) setIsNewDoc(false);
+
     restoredRef.current = true;
     setRestored(true); // ✅ this triggers SEO hydration reliably
   }, [WORD_TARGET_FROM_DATA, STORAGE_KEY, hasIncomingData]);
@@ -581,6 +610,8 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   /* central reset helper (memoized to satisfy exhaustive-deps) */
   const resetToNewDocument = useCallback(
     (payload = {}) => {
+      // ✅ Enter “new doc” mode (prevents SEO fetch + loader overlays)
+      setIsNewDoc(true);
       const nextTitle = payload.title || "Untitled";
       const nextContent =
         typeof payload.content === "string" ? payload.content : "";
@@ -593,6 +624,19 @@ export default function ContentEditor({ data, onBackToDashboard }) {
       setSeoMode("basic");
       setLastEdited("just now");
       setBasicsUnlocked(false);
+
+// ✅ Clear unified SEO state so the editor shows immediately
+setSeo(null);
+setSeoLoading(false);
+setSeoError("");
+
+// ✅ Clear plagiarism session state (fresh doc)
+setPlagiarismLoading(false);
+setPlagiarismSources([]);
+plagiarismInitRanRef.current = false;
+
+// ✅ Ensure SEO hydration can run again for the next real doc
+hydratedFromSeoRef.current = false;
       setMetrics((m) => ({
         ...m,
         plagiarism: 0,
@@ -639,7 +683,7 @@ export default function ContentEditor({ data, onBackToDashboard }) {
   /* listen for multiple "new doc" event names */
   useEffect(() => {
     const handler = (e) => resetToNewDocument(e?.detail || {});
-    const names = ["content-editor:new", "new-document"];
+    const names = ["content-editor:open", "content-editor:new", "new-document"];
     names.forEach((n) => window.addEventListener(n, handler));
     return () => names.forEach((n) => window.removeEventListener(n, handler));
   }, [resetToNewDocument]);

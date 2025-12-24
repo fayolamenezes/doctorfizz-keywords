@@ -1,4 +1,3 @@
-// components/content-editor/CE.ResearchPanel.js
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -112,6 +111,11 @@ export default function CEResearchPanel({
   const [cfgLoading, setCfgLoading] = useState(false);
   const [cfgError, setCfgError] = useState(null);
   const [pages, setPages] = useState([]);
+
+  // ✅ Prevent stale domain data from flashing while a new fetch is in-flight.
+  // When loading starts, downstream panels will see seoData=null and will render loaders.
+  const safeSeoData = seoLoading ? null : seoData;
+  const safeSeoError = seoLoading ? null : seoError;
 
   // Pick current page:
   // 1) Try to infer from editorContent (actual HTML in the editor)
@@ -578,9 +582,9 @@ export default function CEResearchPanel({
         onPasteToEditor={onPasteToEditor}
         currentPage={resolvedPage}
         detailsData={detailsData}
-        seoData={seoData}
+        seoData={safeSeoData}
         seoLoading={seoLoading}
-        seoError={seoError}
+        seoError={safeSeoError}
       />
     );
   }
@@ -674,9 +678,9 @@ export default function CEResearchPanel({
                 currentPage={resolvedPage}
                 basicsData={basicsData}
                 editorContent={editorContent}
-                seoData={seoData}
+                seoData={safeSeoData}
                 seoLoading={seoLoading}
-                seoError={seoError}
+                seoError={safeSeoError}
               />
             )}
 
@@ -687,9 +691,9 @@ export default function CEResearchPanel({
                 linksExternal={linksExternal}
                 linksInternal={linksInternal}
                 currentPage={resolvedPage}
-                seoData={seoData}
+                seoData={safeSeoData}
                 seoLoading={seoLoading}
-                seoError={seoError}
+                seoError={safeSeoError}
               />
             )}
 
@@ -698,9 +702,9 @@ export default function CEResearchPanel({
                 onPasteToEditor={onPasteToEditor}
                 faqs={demoMode ? faqs : undefined}
                 currentPage={resolvedPage}
-                seoData={seoData}
+                seoData={safeSeoData}
                 seoLoading={seoLoading}
-                seoError={seoError}
+                seoError={safeSeoError}
               />
             )}
 
@@ -717,9 +721,9 @@ export default function CEResearchPanel({
                 optimizeData={optimizeData}
                 linksExternal={linksExternal}
                 faqs={faqs}
-                seoData={seoData}
+                seoData={safeSeoData}
                 seoLoading={seoLoading}
-                seoError={seoError}
+                seoError={safeSeoError}
               />
             )}
           </>

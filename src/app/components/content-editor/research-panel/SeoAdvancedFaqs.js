@@ -169,6 +169,24 @@ export default function SeoAdvancedFaqs({
   const loading = !!seoLoading;
   const error = seoError || "";
 
+  // ✅ DEBUG (ADDED): inspect what we actually receive
+  useMemo(() => {
+    if (typeof window === "undefined") return;
+
+    const paa = seoData?.faqs?.peopleAlsoAsk;
+    const paaLen = Array.isArray(paa) ? paa.length : "NOT_ARRAY";
+    const sample = Array.isArray(paa) && paa.length ? paa[0] : null;
+
+    console.log("=== [SeoAdvancedFaqs DEBUG] ===");
+    console.log("[Faqs] seoLoading:", seoLoading);
+    console.log("[Faqs] seoError:", seoError);
+    console.log("[Faqs] seoData?.faqs:", seoData?.faqs);
+    console.log("[Faqs] seoData?.faqs?.peopleAlsoAsk length:", paaLen);
+    console.log("[Faqs] sample peopleAlsoAsk[0]:", sample);
+    console.log("[Faqs] received `faqs` prop (should be ignored):", faqs);
+    console.log("===============================");
+  }, [seoData, seoLoading, seoError, faqs]);
+
   // ✅ CHANGED: Perplexity-only. Ignore `faqs` prop completely (no fallback).
   const effectiveFaqs = useMemo(() => {
     if (seoData?.faqs && typeof seoData.faqs === "object") return seoData.faqs;
@@ -330,6 +348,23 @@ export default function SeoAdvancedFaqs({
       }
     }
 
+    // ✅ DEBUG (ADDED): show computed row counts
+    if (typeof window !== "undefined") {
+      console.log("[Faqs] computed rows:", {
+        serpRows: serp.length,
+        paRows: paa.length,
+        quoraRows: quora.length,
+        redditRows: reddit.length,
+        peopleAlsoAskIn: peopleAlsoAsk.length,
+        apiOrganicIn: apiOrganic.length,
+        apiPaaIn: apiPaa.length,
+        fbSerpIn: fbSerp.length,
+        fbPaaIn: fbPaa.length,
+        fbQuoraIn: fbQuora.length,
+        fbRedditIn: fbReddit.length,
+      });
+    }
+
     return { serpRows: serp, paRows: paa, quoraRows: quora, redditRows: reddit };
   }, [seoData, effectiveFaqs, effectiveDomain, queryFilter]);
 
@@ -347,6 +382,12 @@ export default function SeoAdvancedFaqs({
     const q = kwFilter.toLowerCase();
     return rows.filter((r) => (r?.title || "").toLowerCase().includes(q));
   }, [faqTab, kwFilter, serpRows, paRows, quoraRows, redditRows]);
+
+  // ✅ DEBUG (ADDED): show filter + tab result length
+  useMemo(() => {
+    if (typeof window === "undefined") return;
+    console.log("[Faqs] activeTab:", faqTab, "kwFilter:", kwFilter, "filteredLen:", filtered.length);
+  }, [faqTab, kwFilter, filtered.length]);
 
   function handlePaste(text, row) {
     const cleanTitle = String(row?.title || text || "").trim();
