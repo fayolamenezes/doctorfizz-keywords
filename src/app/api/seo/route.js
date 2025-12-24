@@ -901,15 +901,13 @@ export async function POST(request) {
       providers = ["psi", "authority", "serper", "dataforseo", "content", "faqs"],
     } = body || {};
 
-    // Ensure FAQs are included in the unified response for Advanced → FAQ tab.
-    // If the caller provided a providers array without "faqs", we still want FAQs unless keywordsOnly.
-    if (!keywordsOnly) {
-      const list = Array.isArray(providers) ? providers.filter(Boolean) : [];
-      if (!list.includes("faqs")) list.push("faqs");
-      // FAQs generation needs page text; ensure "content" is available when FAQs are requested.
-      if (list.includes("faqs") && !list.includes("content")) list.push("content");
-      providers = list;
-    }
+    // FAQs are used by Advanced → FAQs tab. Default to true unless explicitly disabled.
+    const wantsFaqs = body?.includeFaqs ?? body?.generateFaqs ?? true;
+
+    // Ensure providers is a clean array (do not mutate selection/order).
+    providers = Array.isArray(providers)
+      ? providers.map((p) => String(p || "").trim()).filter(Boolean)
+      : [];
 
     if (!url) {
       return NextResponse.json({ error: "Missing 'url' in request body" }, { status: 400 });
@@ -1147,7 +1145,7 @@ export async function POST(request) {
       // -----------------------------------------
       // ✅ FAQs via Perplexity (MAIN)
       // -----------------------------------------
-      if (providers.includes("faqs") && !keywordsOnly) {
+      if (wantsFaqs && !keywordsOnly) {
         try {
           // Ensure we have rawText available
           if (!unified.content?.rawText) {
@@ -1456,19 +1454,10 @@ export async function POST(request) {
           // -----------------------------------------
           // ✅ FAQs via Perplexity (MAIN)
           // -----------------------------------------
-          if (providers.includes("faqs") && !keywordsOnly) {
+          if (wantsFaqs && !keywordsOnly) {
             try {
-              let rawTextForFaqs = String(unified.content?.rawText || "").trim();
+              const rawTextForFaqs = String(unified.content?.rawText || "").trim();
               const count = clampFaqCount(body?.faqCount ?? body?.faqsCount ?? 10, 10);
-
-              // If "content" was not requested earlier, fetch it now because FAQs need page text.
-              if (!rawTextForFaqs) {
-                const contentPayload = await buildContentPayload(url, keyword || "", countryCode, languageCode);
-                unified.content = contentPayload;
-                rawTextForFaqs = String(contentPayload?.rawText || "").trim();
-              }
-
-(body?.faqCount ?? body?.faqsCount ?? 10, 10);
 
               if (rawTextForFaqs) {
                 send("status", {
