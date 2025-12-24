@@ -161,7 +161,8 @@ function sanitizeHtmlForEditor(inputHtml) {
   // For <a>: keep href, title, target, rel
   html = html.replace(/<a\b([^>]*)>/gi, (m, attrs) => {
     const href = (attrs.match(/\shref\s*=\s*["'][^"']*["']/i) || [])[0] || "";
-    const title = (attrs.match(/\stitle\s*=\s*["'][^"']*["']/i) || [])[0] || "";
+    const title =
+      (attrs.match(/\stitle\s*=\s*["'][^"']*["']/i) || [])[0] || "";
     const target =
       (attrs.match(/\starget\s*=\s*["'][^"']*["']/i) || [])[0] || "";
     const rel = (attrs.match(/\srel\s*=\s*["'][^"']*["']/i) || [])[0] || "";
@@ -385,9 +386,23 @@ async function runOpportunitiesScan({
         (plagiarismBudgetRemaining = Math.max(0, plagiarismBudgetRemaining - 1)),
     };
 
+    // ✅ Cap discovered URLs before expensive extraction
+    blogUrls = (blogUrls || []).slice(0, 24);
+    pageUrls = (pageUrls || []).slice(0, 24);
+
     // Fetch meta for candidates
-    const blogMetaAll = await fetchManyMeta(blogUrls, hostname, allowSubdomains, budgetApi);
-    const pageMetaAll = await fetchManyMeta(pageUrls, hostname, allowSubdomains, budgetApi);
+    const blogMetaAll = await fetchManyMeta(
+      blogUrls,
+      hostname,
+      allowSubdomains,
+      budgetApi
+    );
+    const pageMetaAll = await fetchManyMeta(
+      pageUrls,
+      hostname,
+      allowSubdomains,
+      budgetApi
+    );
 
     // ✅ store ONLY the “best 2 blogs + best 2 pages”
     const blogMeta = selectTopN(blogMetaAll, 2);
@@ -504,17 +519,39 @@ function extractLinks(html, baseUrl) {
 // ---------------------------
 // Fetch + meta extraction
 // ---------------------------
+
+// ✅ Replace fetchManyMeta with a bounded concurrent pool
 async function fetchManyMeta(urls, hostname, allowSubdomains, plagiarismBudgetApi) {
   const uniq = Array.from(new Set((urls || []).filter(Boolean)));
 
-  const metas = [];
-  for (const u of uniq) {
-    const meta = await fetchMeta(u, hostname, allowSubdomains, plagiarismBudgetApi);
-    if (meta) metas.push(meta);
-  }
+  // ✅ HARD CAP: do not scan unlimited URLs
+  // (Tune these numbers. This alone prevents “scan takes forever”.)
+  const CAPPED = uniq.slice(0, 18);
 
+  const metas = [];
+  const CONCURRENCY = 4;
+
+  let idx = 0;
+  const workers = Array.from({ length: CONCURRENCY }, async () => {
+    while (idx < CAPPED.length) {
+      const myIdx = idx++;
+      const u = CAPPED[myIdx];
+
+      try {
+        const meta = await fetchMeta(u, hostname, allowSubdomains, plagiarismBudgetApi);
+        if (meta) metas.push(meta);
+      } catch {
+        // swallow per-url errors; scan must finish
+      }
+    }
+  });
+
+  await Promise.all(workers);
+
+  // de-dupe by final url
   const seen = new Set();
   return metas.filter((m) => {
+    if (!m?.url) return false;
     if (seen.has(m.url)) return false;
     seen.add(m.url);
     return true;

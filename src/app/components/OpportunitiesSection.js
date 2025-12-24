@@ -204,8 +204,7 @@ function pickTopPublishedAndDraft(items = []) {
 
 const OPPS_CLIENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-const oppsCacheKey = (domain) =>
-  `drfizz.opps.v1:${normalizeDomain(domain || "")}`;
+const oppsCacheKey = (domain) => `drfizz.opps.v1:${normalizeDomain(domain || "")}`;
 
 function readOppsCache(domain) {
   try {
@@ -238,6 +237,7 @@ function StartModal({
   onCreateFromScratch,
   onEditExisting,
   onCreateWithStyle,
+  editingExisting = false,
 }) {
   const STYLES = [
     {
@@ -274,7 +274,8 @@ function StartModal({
         {/* Close */}
         <button
           onClick={onClose}
-          className="absolute right-4 top-4 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 text-gray-700 hover:bg-gray-50"
+          disabled={editingExisting}
+          className="absolute right-4 top-4 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 text-gray-700 hover:bg-gray-50 disabled:opacity-60"
           aria-label="Close"
         >
           <X size={16} />
@@ -361,6 +362,7 @@ function StartModal({
               {STYLES.map((s) => (
                 <button
                   key={s.id}
+                  disabled={editingExisting}
                   onMouseEnter={() => setHover(s.id)}
                   onClick={() => {
                     setHover(s.id);
@@ -375,6 +377,7 @@ function StartModal({
                         ? "ring-1 ring-black/5"
                         : "hover:ring-1 hover:ring-black/5"
                     }
+                    disabled:opacity-60
                   `}
                   aria-pressed={hover === s.id}
                   title="Click to create a new blog with this style"
@@ -400,18 +403,28 @@ function StartModal({
           <div className="sticky bottom-0 left-0 right-0 bg-white border-t border-[#E5E7EB] px-6 py-4 flex items-center justify-between gap-3">
             <button
               onClick={onCreateFromScratch}
-              className="text-[13px] font-medium text-[#F97316]"
+              disabled={editingExisting}
+              className="text-[13px] font-medium text-[#F97316] disabled:opacity-60"
             >
               Create from scratch
             </button>
+
             <button
               onClick={onEditExisting}
-              className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-[13px] font-semibold text-white bg-[#F97316] hover:brightness-95 shadow-sm"
+              disabled={editingExisting}
+              className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-[13px] font-semibold text-white bg-[#F97316] hover:brightness-95 shadow-sm disabled:opacity-60"
             >
-              Edit existing page
+              {editingExisting ? "Fetching content…" : "Edit existing page"}
               <ChevronRight size={16} />
             </button>
           </div>
+
+          {/* Small inline note */}
+          {editingExisting ? (
+            <div className="px-6 pb-4 text-[12px] text-[#6B7280]">
+              Pulling the page HTML so the editor opens instantly…
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
@@ -449,6 +462,9 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
   // Modal state
   const [startOpen, setStartOpen] = useState(false);
   const startPayloadRef = useRef(null); // keep real title/kind/content/domain for "Edit existing"
+
+  // ✅ NEW: gate the modal action while we fetch missing HTML
+  const [editingExisting, setEditingExisting] = useState(false);
 
   useEffect(() => {
     const d = getSiteFromStorageOrQuery(searchParams);
@@ -545,7 +561,6 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
         startPolling(cachedClient.scanId, {
           onComplete: () => {
             if (!alive) return;
-            // refetch after scan completes
             load({ refetchAfterScan: true }).catch(() => {});
           },
         });
@@ -590,10 +605,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
               status: "running",
               scanId: id,
               seoRows:
-                seoRowsRef.current ||
-                cachedClient?.seoRows ||
-                cc?.seoRows ||
-                null,
+                seoRowsRef.current || cachedClient?.seoRows || cc?.seoRows || null,
             });
           }
 
@@ -679,14 +691,12 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
   // Merge slots: metrics from seo-data, content/title + SEO fields from multi-content when available
   const mergeSlot = (seoSlot, multiSlot, fallbackTitle) => {
-    const title =
-      multiSlot?.title || seoSlot?.title || fallbackTitle || "Untitled";
+    const title = multiSlot?.title || seoSlot?.title || fallbackTitle || "Untitled";
     const content = multiSlot?.content || seoSlot?.content || "";
 
     if (!seoSlot && !multiSlot) return {};
 
-    const primaryKeyword =
-      multiSlot?.primaryKeyword ?? seoSlot?.primaryKeyword ?? null;
+    const primaryKeyword = multiSlot?.primaryKeyword ?? seoSlot?.primaryKeyword ?? null;
     const lsiKeywords =
       (Array.isArray(multiSlot?.lsiKeywords) && multiSlot.lsiKeywords.length
         ? multiSlot.lsiKeywords
@@ -701,8 +711,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
         : null;
 
     const plagiarismSources =
-      Array.isArray(multiSlot?.plagiarismSources) &&
-      multiSlot.plagiarismSources.length
+      Array.isArray(multiSlot?.plagiarismSources) && multiSlot.plagiarismSources.length
         ? multiSlot.plagiarismSources
         : Array.isArray(seoSlot?.plagiarismSources)
         ? seoSlot.plagiarismSources
@@ -801,46 +810,189 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
   const dispatchOpen = (payload) => {
     try {
-      window.dispatchEvent(
-        new CustomEvent("content-editor:open", { detail: payload })
-      );
+      window.dispatchEvent(new CustomEvent("content-editor:open", { detail: payload }));
     } catch {}
     onOpenContentEditor?.(payload);
   };
 
-  const handleEditExisting = () => {
+  // ✅ NEW: one-off content fetch fallback (guarantees content exists when opening)
+  const fetchExistingContentIfMissing = useCallback(async (payload) => {
+    const url = ensureHttpUrl(payload?.url || "");
+    const has = typeof payload?.content === "string" && payload.content.trim();
+    if (!url || has) return payload;
+
+    const res = await fetch("/api/seo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        keyword: normalizeDomain(payload?.domain || domain) || "",
+        countryCode: "in",
+        languageCode: "en",
+        providers: ["content"],
+      }),
+    });
+
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return payload;
+
+    const html =
+      (typeof json?.unified?.content?.html === "string" && json.unified.content.html) ||
+      (typeof json?.content?.html === "string" && json.content.html) ||
+      (typeof json?.results?.content?.html === "string" && json.results.content.html) ||
+      (typeof json?.contentHtml === "string" && json.contentHtml) ||
+      "";
+
+    if (!String(html || "").trim()) return payload;
+
+    return { ...payload, content: String(html) };
+  }, [domain]);
+
+  // ✅ NEW: patch BOTH state + sessionStorage cache after fallback fetch succeeds
+  const patchSlotContentEverywhere = useCallback((kind, url, html) => {
+    const normUrl = ensureHttpUrl(url);
+    if (!normUrl || !String(html || "").trim()) return;
+
+    // Patch state
+    setSeoRows((prev) => {
+      if (!prev?.length) return prev;
+      const next = prev.map((row, rowIdx) => {
+        const blog = Array.isArray(row?.content?.blog) ? row.content.blog : [];
+        const pages = Array.isArray(row?.content?.pages) ? row.content.pages : [];
+
+        const patchList = (list) =>
+          list.map((s) => {
+            const sUrl = ensureHttpUrl(s?.url || "");
+            if (sUrl && sUrl === normUrl) {
+              const existing = typeof s?.content === "string" ? s.content : "";
+              if (!existing.trim()) return { ...s, content: String(html) };
+            }
+            return s;
+          });
+
+        const nextRow = {
+          ...row,
+          content: {
+            blog: patchList(blog),
+            pages: patchList(pages),
+          },
+        };
+
+        // Only update the first row that contains the URL; cheap and safe
+        return rowIdx === 0 ? nextRow : nextRow;
+      });
+      return next;
+    });
+
+    // Patch cache
+    try {
+      const d = normalizeDomain(domain);
+      const cached = readOppsCache(d);
+      if (!cached?.seoRows?.length) return;
+
+      const row0 = cached.seoRows[0];
+      const blog = Array.isArray(row0?.content?.blog) ? row0.content.blog : [];
+      const pages = Array.isArray(row0?.content?.pages) ? row0.content.pages : [];
+
+      const patchList = (list) =>
+        list.map((s) => {
+          const sUrl = ensureHttpUrl(s?.url || "");
+          const existing = typeof s?.content === "string" ? s.content : "";
+          if (sUrl && sUrl === normUrl && !existing.trim()) {
+            return { ...s, content: String(html) };
+          }
+          return s;
+        });
+
+      const nextRow0 = {
+        ...row0,
+        content: {
+          blog: patchList(blog),
+          pages: patchList(pages),
+        },
+      };
+
+      writeOppsCache(d, {
+        ts: Date.now(),
+        status: cached.status || "complete",
+        scanId: cached.scanId || "",
+        seoRows: [nextRow0],
+      });
+    } catch {
+      // ignore
+    }
+  }, [domain]);
+
+  const handleEditExisting = async () => {
     const real = startPayloadRef.current || {};
-    if (!real.title && !real.content && !real.url) {
+    if ((!real.title && !real.content && !real.url) || editingExisting) {
       setStartOpen(false);
       return;
     }
 
-    dispatchOpen({
-      title: real.title,
-      slug: real.slug || (real.title ? slugify(real.title) : undefined),
-      kind: real.kind || "blog",
-      content: real.content || "",
-      domain: real.domain || domain,
-      url: real.url
-        ? ensureHttpUrl(real.url)
-        : buildUrlFromDomainAndSlug(real.domain || domain, real.slug),
+    setEditingExisting(true);
+    setOppsError("");
 
-      primaryKeyword: real.primaryKeyword || null,
-      lsiKeywords: real.lsiKeywords || [],
-      plagiarism: typeof real.plagiarism === "number" ? real.plagiarism : null,
-      plagiarismSources: Array.isArray(real.plagiarismSources)
-        ? real.plagiarismSources
-        : [],
-      sourceHtml: real.content || "",
-      searchVolume:
-        typeof real.searchVolume === "number" ? real.searchVolume : null,
-      keywordDifficulty:
-        typeof real.keywordDifficulty === "number"
-          ? real.keywordDifficulty
-          : null,
-    });
+    try {
+      // Ensure URL is always present
+      const safeUrl =
+        real.url
+          ? ensureHttpUrl(real.url)
+          : buildUrlFromDomainAndSlug(real.domain || domain, real.slug);
 
-    setStartOpen(false);
+      let payload = {
+        title: real.title,
+        slug: real.slug || (real.title ? slugify(real.title) : undefined),
+        kind: real.kind || "blog",
+        content: real.content || "",
+        domain: real.domain || domain,
+        url: safeUrl,
+
+        primaryKeyword: real.primaryKeyword || null,
+        lsiKeywords: real.lsiKeywords || [],
+        plagiarism: typeof real.plagiarism === "number" ? real.plagiarism : null,
+        plagiarismSources: Array.isArray(real.plagiarismSources)
+          ? real.plagiarismSources
+          : [],
+        sourceHtml: real.content || "",
+        searchVolume: typeof real.searchVolume === "number" ? real.searchVolume : null,
+        keywordDifficulty:
+          typeof real.keywordDifficulty === "number" ? real.keywordDifficulty : null,
+      };
+
+      // ✅ Fallback fetch if missing content
+      const before = payload.content;
+      payload = await fetchExistingContentIfMissing(payload);
+
+      // If we fetched HTML, patch state/cache so next time it's instant everywhere
+      if (!String(before || "").trim() && String(payload.content || "").trim()) {
+        patchSlotContentEverywhere(payload.kind, payload.url, payload.content);
+      }
+
+      // Open editor with guaranteed-best content we have
+      dispatchOpen(payload);
+      setStartOpen(false);
+    } catch (e) {
+      console.error("[OpportunitiesSection] Edit existing failed:", e);
+      setOppsError(e?.message || "Failed to open editor");
+      // still open editor with what we have (non-blocking UX)
+      try {
+        const real2 = startPayloadRef.current || {};
+        dispatchOpen({
+          title: real2.title,
+          slug: real2.slug || (real2.title ? slugify(real2.title) : undefined),
+          kind: real2.kind || "blog",
+          content: real2.content || "",
+          domain: real2.domain || domain,
+          url: real2.url
+            ? ensureHttpUrl(real2.url)
+            : buildUrlFromDomainAndSlug(real2.domain || domain, real2.slug),
+        });
+        setStartOpen(false);
+      } catch {}
+    } finally {
+      setEditingExisting(false);
+    }
   };
 
   const handleCreateFromScratch = () => {
@@ -913,10 +1065,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
           color: cfg.txt,
         }}
       >
-        <span
-          className="h-2.5 w-2.5 rounded-full"
-          style={{ backgroundColor: cfg.dot }}
-        />
+        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: cfg.dot }} />
         {cfg.label}
       </span>
     );
@@ -954,11 +1103,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
         <div className="mt-3 flex items-center gap-2">
           <PriorityBadge score={score} />
           <span className="inline-flex items-center gap-2 rounded-[10px] border border-[var(--border)] bg-[#F6F8FB] px-2.5 py-1 text-[12px] text-[var(--muted)]">
-            {status === "Published" ? (
-              <Check size={14} />
-            ) : (
-              <PencilLine size={14} />
-            )}
+            {status === "Published" ? <Check size={14} /> : <PencilLine size={14} />}
             {status}
           </span>
         </div>
@@ -988,13 +1133,10 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
           <button
             onClick={() => {
               const titleForSlug = realTitle || displayTitle;
-              const slug =
-                data?.slug ||
-                (titleForSlug ? slugify(titleForSlug) : undefined);
+              const slug = data?.slug || (titleForSlug ? slugify(titleForSlug) : undefined);
 
               const url =
-                ensureHttpUrl(data?.url || "") ||
-                buildUrlFromDomainAndSlug(domain, slug);
+                ensureHttpUrl(data?.url || "") || buildUrlFromDomainAndSlug(domain, slug);
 
               startPayloadRef.current = {
                 kind: type, // "blog" or "page"
@@ -1006,20 +1148,14 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
                 primaryKeyword: data?.primaryKeyword || null,
                 lsiKeywords: data?.lsiKeywords || [],
-                plagiarism:
-                  typeof data?.plagiarism === "number" ? data.plagiarism : null,
+                plagiarism: typeof data?.plagiarism === "number" ? data.plagiarism : null,
                 plagiarismSources: Array.isArray(data?.plagiarismSources)
                   ? data.plagiarismSources
                   : [],
                 plagiarismCheckedAt: data?.plagiarismCheckedAt || null,
-                searchVolume:
-                  typeof data?.searchVolume === "number"
-                    ? data.searchVolume
-                    : null,
+                searchVolume: typeof data?.searchVolume === "number" ? data.searchVolume : null,
                 keywordDifficulty:
-                  typeof data?.keywordDifficulty === "number"
-                    ? data.keywordDifficulty
-                    : null,
+                  typeof data?.keywordDifficulty === "number" ? data.keywordDifficulty : null,
               };
               setStartOpen(true);
             }}
@@ -1047,9 +1183,7 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
       </h2>
 
       {loadingOpps ? (
-        <div className="mb-3 ml-1 text-[12px] text-[var(--muted)]">
-          {loadingMsg}
-        </div>
+        <div className="mb-3 ml-1 text-[12px] text-[var(--muted)]">{loadingMsg}</div>
       ) : null}
       {oppsError ? (
         <div className="mb-3 ml-1 text-[12px] text-red-500">{oppsError}</div>
@@ -1087,10 +1221,11 @@ export default function OpportunitiesSection({ onOpenContentEditor }) {
 
       <StartModal
         open={startOpen}
-        onClose={() => setStartOpen(false)}
+        onClose={() => (editingExisting ? null : setStartOpen(false))}
         onCreateFromScratch={handleCreateFromScratch}
         onEditExisting={handleEditExisting}
         onCreateWithStyle={handleCreateWithStyle}
+        editingExisting={editingExisting}
       />
     </>
   );

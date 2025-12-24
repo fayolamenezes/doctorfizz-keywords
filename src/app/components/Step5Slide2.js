@@ -10,6 +10,10 @@ import {
   UsersRound,
 } from "lucide-react";
 
+// ✅ NEW: Gate Dashboard open until opportunities (titles + top content) are prefetched
+// Adjust import path if your project places this elsewhere.
+import { prefetchOpportunitiesAndContent } from "@/lib/prefetch-opportunities";
+
 /**
  * Props:
  * - onBack(): go to previous slide
@@ -39,7 +43,7 @@ export default function Step5Slide2({
   const [loadingDots, setLoadingDots] = useState(".");
   const [progressPct, setProgressPct] = useState(0);
 
-  // ✅ NEW: realtime SSE status text (Option B)
+  // ✅ realtime SSE status text
   const [statusText, setStatusText] = useState("");
 
   // ✅ fake progress interval ref (used on click so it ALWAYS moves 0→92)
@@ -114,23 +118,17 @@ export default function Step5Slide2({
   }, []);
 
   // ----- Data shaping -----------------------------------------------------------
-  const industry =
-    businessData?.industrySector ??
-    businessData?.industry ??
-    "—";
+  const industry = businessData?.industrySector ?? businessData?.industry ?? "—";
 
-  const offeringType =
-    businessData?.offeringType ??
-    businessData?.offering ??
-    "—";
+  const offeringType = businessData?.offeringType ?? businessData?.offering ?? "—";
 
   const specificService =
-    businessData?.specificService ??
-    businessData?.category ??
-    "—";
+    businessData?.specificService ?? businessData?.category ?? "—";
 
   const getStr = (x) =>
-    typeof x === "string" ? x : (x && (x.label || x.name || x.title)) || undefined;
+    typeof x === "string"
+      ? x
+      : (x && (x.label || x.name || x.title)) || undefined;
 
   const buildLocation = useCallback(({ city, state, country, location }) => {
     const loc = getStr(location);
@@ -189,7 +187,10 @@ export default function Step5Slide2({
   // ----- Loader scroll & dashboard transition ----------------------------------
   const scrollLoaderIntoView = () => {
     const tryScroll = () => {
-      loaderAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      loaderAnchorRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
       scrollRef.current?.scrollTo({
         top: scrollRef.current.scrollHeight,
         behavior: "smooth",
@@ -203,9 +204,7 @@ export default function Step5Slide2({
   // Helper: normalize domain like in Dashboard
   const normalizeDomain = (input = "") => {
     try {
-      const url = input.includes("://")
-        ? new URL(input)
-        : new URL(`https://${input}`);
+      const url = input.includes("://") ? new URL(input) : new URL(`https://${input}`);
       let host = url.hostname.toLowerCase();
       if (host.startsWith("www.")) host = host.slice(4);
       return host;
@@ -246,8 +245,7 @@ export default function Step5Slide2({
           if (!raw) continue;
           try {
             const obj = JSON.parse(raw);
-            const val =
-              obj?.website || obj?.site || obj?.domain || obj?.host || raw;
+            const val = obj?.website || obj?.site || obj?.domain || obj?.host || raw;
             if (val) return normalizeDomain(String(val));
           } catch {
             return normalizeDomain(String(raw));
@@ -297,7 +295,7 @@ export default function Step5Slide2({
     return await blob.text().then((t) => JSON.parse(t));
   };
 
-  // ✅ NEW: SSE reader for Option B (reads status + final done payload)
+  // ✅ SSE reader (reads status + final done payload)
   const readSseDone = async (res) => {
     if (!res.body || typeof res.body.getReader !== "function") {
       // Fallback (shouldn't happen in modern browsers)
@@ -390,9 +388,36 @@ export default function Step5Slide2({
         if (typeof first === "string") keyword = first;
       }
 
-      // Show initial “real inputs” immediately
+      // Start messages
       setStatusText(`Starting… URL: ${domain} • Keyword: ${keyword}`);
 
+      // ✅ NEW: kick opportunities prefetch and WAIT (in parallel with SEO)
+      // This is what ensures: dashboard opens with titles ready, and top items open with content ready.
+      const oppsPromise = (async () => {
+        try {
+          setStatusText("Preparing content opportunities…");
+          const res = await prefetchOpportunitiesAndContent(domain, {
+            concurrency: 2,
+            // Increase if your scan often takes longer than 2 minutes
+            timeoutMs: 5 * 60 * 1000,
+            // If your helper supports these options, keep them; otherwise they’ll be ignored
+            countryCode: "in",
+            languageCode: "en",
+          });
+          if (!res?.ok) {
+            setStatusText("Opportunities still processing… continuing…");
+            return { ok: false };
+          }
+          setStatusText("Opportunities ready ✅");
+          return { ok: true };
+        } catch (e) {
+          console.warn("[Step5Slide2] Opportunities prefetch failed:", e);
+          setStatusText("Opportunities prefetch failed… continuing…");
+          return { ok: false };
+        }
+      })();
+
+      // ✅ Existing SEO SSE prefetch (unchanged)
       const payload = {
         url,
         keyword,
@@ -403,22 +428,29 @@ export default function Step5Slide2({
         providers: ["psi", "authority", "dataforseo", "content", "onpageKeywords"],
       };
 
-      const res = await fetch("/api/seo", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // ✅ Ask for SSE (Option B)
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify(payload),
-      });
+      const seoPromise = (async () => {
+        const res = await fetch("/api/seo", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body: JSON.stringify(payload),
+        });
 
-      if (!res.ok) {
-        throw new Error(`SEO API failed: ${res.status}`);
-      }
+        if (!res.ok) {
+          throw new Error(`SEO API failed: ${res.status}`);
+        }
 
-      // ✅ Read SSE status events + final unified JSON
-      const json = await readSseDone(res);
+        // Read SSE status events + final unified JSON
+        const json = await readSseDone(res);
+        return json;
+      })();
+
+      // ✅ Wait for BOTH:
+      // - Opportunities prefetch (titles + top content) so Dashboard doesn't show placeholders
+      // - SEO prefetch so Dashboard can skip its own fetch
+      const [_, seoJson] = await Promise.all([oppsPromise, seoPromise]);
 
       // End: stop fake, set 100
       stopFakeProgress();
@@ -427,14 +459,14 @@ export default function Step5Slide2({
 
       // Stash for Dashboard to read & skip its own fetch
       if (typeof window !== "undefined") {
-        window.__drfizzSeoPrefetch = json;
+        window.__drfizzSeoPrefetch = seoJson;
         window.dispatchEvent(new Event("dashboard:open"));
       }
 
       // slight delay so 100% is visible
       setTimeout(() => onDashboard?.(), 250);
     } catch (e) {
-      console.error("[Step5Slide2] Failed to prefetch SEO:", e);
+      console.error("[Step5Slide2] Failed to prefetch dashboard:", e);
 
       stopFakeProgress();
       setProgressPct(100);
@@ -574,7 +606,10 @@ export default function Step5Slide2({
         <div
           ref={panelRef}
           className="mx-auto w-full max-w-[1120px] rounded-2xl bg-transparent"
-          style={{ padding: "0px 24px", height: panelHeight ? `${panelHeight}px` : "auto" }}
+          style={{
+            padding: "0px 24px",
+            height: panelHeight ? `${panelHeight}px` : "auto",
+          }}
         >
           <div ref={scrollRef} className="no-scrollbar h-full w-full overflow-y-auto">
             <div className="max-w-[1120px] mx-auto pt-6 sm:pt-8">
@@ -584,7 +619,8 @@ export default function Step5Slide2({
                   Great! You’re all done.
                 </h1>
                 <p className="mt-1.5 sm:mt-2 text-[12px] sm:text-[13px] md:text-base text-[var(--muted)]">
-                  Here is your <span className="font-semibold">entire report</span> based on your input.
+                  Here is your <span className="font-semibold">entire report</span>{" "}
+                  based on your input.
                 </p>
               </div>
 
@@ -653,9 +689,13 @@ export default function Step5Slide2({
                       </div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {businessCompetitors.length ? (
-                          businessCompetitors.map((c, i) => <Chip key={`biz-${i}`}>{String(c)}</Chip>)
+                          businessCompetitors.map((c, i) => (
+                            <Chip key={`biz-${i}`}>{String(c)}</Chip>
+                          ))
                         ) : (
-                          <span className="text-[12px] sm:text-[13px] text-[var(--muted)]">None selected</span>
+                          <span className="text-[12px] sm:text-[13px] text-[var(--muted)]">
+                            None selected
+                          </span>
                         )}
                       </div>
                     </div>
@@ -666,9 +706,13 @@ export default function Step5Slide2({
                       </div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {searchCompetitors.length ? (
-                          searchCompetitors.map((c, i) => <Chip key={`sea-${i}`}>{String(c)}</Chip>)
+                          searchCompetitors.map((c, i) => (
+                            <Chip key={`sea-${i}`}>{String(c)}</Chip>
+                          ))
                         ) : (
-                          <span className="text-[12px] sm:text-[13px] text-[var(--muted)]">None selected</span>
+                          <span className="text-[12px] sm:text-[13px] text-[var(--muted)]">
+                            None selected
+                          </span>
                         )}
                       </div>
                     </div>
@@ -678,7 +722,8 @@ export default function Step5Slide2({
 
               {/* Instruction line */}
               <div className="mt-2 text-center text-[12px] sm:text-[13px] md:text-[14px] text-[var(--muted)]">
-                All set? Click <span className="font-semibold">‘Dashboard’</span> to continue.
+                All set? Click <span className="font-semibold">‘Dashboard’</span>{" "}
+                to continue.
                 <span className="mx-1" />
                 <button
                   onClick={onBack}
@@ -696,7 +741,9 @@ export default function Step5Slide2({
               {/* Loader (appears after Dashboard click) */}
               {loading && (
                 <div className="mt-6 sm:mt-8 flex flex-col items-center">
-                  <p className="text-[12px] sm:text-[13px] md:text-[14px] text-[var(--muted)]">Great things take time!</p>
+                  <p className="text-[12px] sm:text-[13px] md:text-[14px] text-[var(--muted)]">
+                    Great things take time!
+                  </p>
                   <p className="text-[12px] sm:text-[13px] md:text-[14px] text-[var(--muted)]">
                     Preparing your <span className="font-semibold">Dashboard</span>.
                   </p>
@@ -706,7 +753,7 @@ export default function Step5Slide2({
                     Loading{loadingDots}
                   </p>
 
-                  {/* ✅ NEW: realtime “what’s being fetched” (a little margin from Loading...) */}
+                  {/* realtime status */}
                   {!!statusText && (
                     <p className="mt-2 text-[12px] sm:text-[13px] md:text-[14px] text-[var(--muted)]">
                       {statusText}
@@ -718,60 +765,128 @@ export default function Step5Slide2({
                     <div className="wave-loader">
                       <div className="shine" />
                       <div className="layer layer-back">
-                        <svg viewBox="0 0 200 60" preserveAspectRatio="none" className="seg">
+                        <svg
+                          viewBox="0 0 200 60"
+                          preserveAspectRatio="none"
+                          className="seg"
+                        >
                           <defs>
                             <linearGradient id="inkBack" x1="0" y1="0" x2="1" y2="0">
                               <stop offset="0%">
-                                <animate attributeName="stop-color" values="#d45427;#ffa615;#d45427" dur="6s" repeatCount="indefinite" />
+                                <animate
+                                  attributeName="stop-color"
+                                  values="#d45427;#ffa615;#d45427"
+                                  dur="6s"
+                                  repeatCount="indefinite"
+                                />
                               </stop>
                               <stop offset="100%">
-                                <animate attributeName="stop-color" values="#ffa615;#d45427;#ffa615" dur="6s" repeatCount="indefinite" />
+                                <animate
+                                  attributeName="stop-color"
+                                  values="#ffa615;#d45427;#ffa615"
+                                  dur="6s"
+                                  repeatCount="indefinite"
+                                />
                               </stop>
                             </linearGradient>
                           </defs>
-                          <path d="M0 30 Q 25 22 50 30 T 100 30 T 150 30 T 200 30 V60 H0 Z" fill="url(#inkBack)" />
+                          <path
+                            d="M0 30 Q 25 22 50 30 T 100 30 T 150 30 T 200 30 V60 H0 Z"
+                            fill="url(#inkBack)"
+                          />
                         </svg>
-                        <svg viewBox="0 0 200 60" preserveAspectRatio="none" className="seg clone">
+                        <svg
+                          viewBox="0 0 200 60"
+                          preserveAspectRatio="none"
+                          className="seg clone"
+                        >
                           <defs>
                             <linearGradient id="inkBack2" x1="0" y1="0" x2="1" y2="0">
                               <stop offset="0%">
-                                <animate attributeName="stop-color" values="#d45427;#ffa615;#d45427" dur="6s" repeatCount="indefinite" />
+                                <animate
+                                  attributeName="stop-color"
+                                  values="#d45427;#ffa615;#d45427"
+                                  dur="6s"
+                                  repeatCount="indefinite"
+                                />
                               </stop>
                               <stop offset="100%">
-                                <animate attributeName="stop-color" values="#ffa615;#d45427;#ffa615" dur="6s" repeatCount="indefinite" />
+                                <animate
+                                  attributeName="stop-color"
+                                  values="#ffa615;#d45427;#ffa615"
+                                  dur="6s"
+                                  repeatCount="indefinite"
+                                />
                               </stop>
                             </linearGradient>
                           </defs>
-                          <path d="M0 30 Q 25 22 50 30 T 100 30 T 150 30 T 200 30 V60 H0 Z" fill="url(#inkBack2)" />
+                          <path
+                            d="M0 30 Q 25 22 50 30 T 100 30 T 150 30 T 200 30 V60 H0 Z"
+                            fill="url(#inkBack2)"
+                          />
                         </svg>
                       </div>
 
                       <div className="layer layer-front">
-                        <svg viewBox="0 0 200 60" preserveAspectRatio="none" className="seg">
+                        <svg
+                          viewBox="0 0 200 60"
+                          preserveAspectRatio="none"
+                          className="seg"
+                        >
                           <defs>
                             <linearGradient id="inkFront" x1="0" y1="0" x2="1" y2="0">
                               <stop offset="0%">
-                                <animate attributeName="stop-color" values="#ffa615;#d45427;#ffa615" dur="5s" repeatCount="indefinite" />
+                                <animate
+                                  attributeName="stop-color"
+                                  values="#ffa615;#d45427;#ffa615"
+                                  dur="5s"
+                                  repeatCount="indefinite"
+                                />
                               </stop>
                               <stop offset="100%">
-                                <animate attributeName="stop-color" values="#d45427;#ffa615;#d45427" dur="5s" repeatCount="indefinite" />
+                                <animate
+                                  attributeName="stop-color"
+                                  values="#d45427;#ffa615;#d45427"
+                                  dur="5s"
+                                  repeatCount="indefinite"
+                                />
                               </stop>
                             </linearGradient>
                           </defs>
-                          <path d="M0 30 Q 25 18 50 30 T 100 30 T 150 30 T 200 30 V60 H0 Z" fill="url(#inkFront)" />
+                          <path
+                            d="M0 30 Q 25 18 50 30 T 100 30 T 150 30 T 200 30 V60 H0 Z"
+                            fill="url(#inkFront)"
+                          />
                         </svg>
-                        <svg viewBox="0 0 200 60" preserveAspectRatio="none" className="seg clone">
+                        <svg
+                          viewBox="0 0 200 60"
+                          preserveAspectRatio="none"
+                          className="seg clone"
+                        >
                           <defs>
                             <linearGradient id="inkFront2" x1="0" y1="0" x2="1" y2="0">
                               <stop offset="0%">
-                                <animate attributeName="stop-color" values="#ffa615;#d45427;#ffa615" dur="5s" repeatCount="indefinite" />
+                                <animate
+                                  attributeName="stop-color"
+                                  values="#ffa615;#d45427;#ffa615"
+                                  dur="5s"
+                                  repeatCount="indefinite"
+                                />
                               </stop>
                               <stop offset="100%">
-                                <animate attributeName="stop-color" values="#d45427;#ffa615;#d45427" dur="5s" repeatCount="indefinite" />
+                                <animate
+                                  attributeName="stop-color"
+                                  values="#d45427;#ffa615;#d45427"
+                                  dur="5s"
+                                  repeatCount="indefinite"
+                                />
                               </stop>
                             </linearGradient>
                           </defs>
-                          <path d="M0 30 Q 25 18 50 30 T 100 30 T 150 30 T 200 30 V60 H0 Z" fill="url(#inkFront2)" />
+                          <path
+                            d="M0 30 Q 25 18 50 30 T 100 30 T 150 30 T 200 30 V60 H0 Z"
+                            fill="url(#inkFront2)"
+                          />
                         </svg>
                       </div>
                     </div>
@@ -782,7 +897,9 @@ export default function Step5Slide2({
                     <div className="progress-wrap">
                       <div
                         className="progress-fill"
-                        style={{ width: `${Math.max(0, Math.min(100, progressPct))}%` }}
+                        style={{
+                          width: `${Math.max(0, Math.min(100, progressPct))}%`,
+                        }}
                       />
                       <div className="progress-shine" />
                     </div>

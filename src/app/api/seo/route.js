@@ -233,9 +233,7 @@ async function buildContentPayload(url) {
     // ✅ MAIN CONTENT extraction (Readability-based)
     let main = null;
     try {
-      main = extractMainContentHtml
-        ? extractMainContentHtml(fullHtml, finalUrl)
-        : null;
+      main = extractMainContentHtml ? extractMainContentHtml(fullHtml, finalUrl) : null;
     } catch {
       main = null;
     }
@@ -290,8 +288,7 @@ async function buildContentPayload(url) {
       }
     }
 
-    // If we still have no rawText yet, we can use Readability text as a fallback baseline
-    // (ApyHub step still runs next and can overwrite with better extracted text.)
+    // If we still have no rawText yet, use Readability text as baseline (ApyHub may overwrite)
     if (!rawText && mainText) rawText = mainText;
   } catch (e) {
     if (DEBUG_CONTENT) {
@@ -314,9 +311,7 @@ async function buildContentPayload(url) {
       console.log("[content] apyhub rawText head snippet:", rawText.slice(0, 220));
     }
   } catch (e) {
-    if (DEBUG_CONTENT) {
-      console.log("[content] apyhub ERROR for:", url, e?.message || e);
-    }
+    if (DEBUG_CONTENT) console.log("[content] apyhub ERROR for:", url, e?.message || e);
     // ignore
   }
 
@@ -325,10 +320,7 @@ async function buildContentPayload(url) {
     htmlForEditor = textToHtml(rawText);
     if (htmlForEditor) source = "text_fallback";
     if (DEBUG_CONTENT) {
-      console.log(
-        "[content] using textToHtml fallback; html length:",
-        htmlForEditor.length
-      );
+      console.log("[content] using textToHtml fallback; html length:", htmlForEditor.length);
     }
   }
 
@@ -342,7 +334,7 @@ async function buildContentPayload(url) {
     title: title || null,
     rawText: rawText || "",
     html: htmlForEditor || "",
-    source, // ✅ NEW: more precise source labeling
+    source,
   };
 }
 
@@ -355,15 +347,12 @@ function computePercentGrowth(current, baseline) {
 }
 
 function sseFormat(event, data) {
-  const payload =
-    typeof data === "string" ? data : JSON.stringify(data ?? {}, null, 0);
+  const payload = typeof data === "string" ? data : JSON.stringify(data ?? {}, null, 0);
   return `event: ${event}\ndata: ${payload}\n\n`;
 }
 
 /* ============================================================================
    ✅ RapidAPI fallback helpers (Website Analyze & SEO Audit PRO)
-   - Only used if DataForSEO backlinks are missing/zero
-   - We keep this "best-effort" because RapidAPI response shape can vary by endpoint
 ============================================================================ */
 
 function toNumber(val) {
@@ -411,23 +400,15 @@ function scanForCounts(obj) {
     }
   }
 
-  return {
-    backlinks,
-    referringDomains,
-    referringPages,
-    nofollowPages,
-  };
+  return { backlinks, referringDomains, referringPages, nofollowPages };
 }
 
 async function fetchRapidApiBacklinkFallback(domain) {
   const key = process.env.RAPIDAPI_KEY;
   const host =
-    process.env.RAPIDAPI_HOST ||
-    "website-analyze-and-seo-audit-pro.p.rapidapi.com";
+    process.env.RAPIDAPI_HOST || "website-analyze-and-seo-audit-pro.p.rapidapi.com";
 
-  if (!key) {
-    throw new Error("RAPIDAPI_KEY is not set");
-  }
+  if (!key) throw new Error("RAPIDAPI_KEY is not set");
 
   const endpointsToTry = [
     { path: "/domain-data", query: { domain } },
@@ -620,12 +601,7 @@ function buildOnpageSeoRowsFromKeywords(keywords = [], domain = "") {
   });
 }
 
-async function fetchOnpageKeywordsViaPerplexity({
-  url,
-  domain,
-  industry = "",
-  location = "",
-}) {
+async function fetchOnpageKeywordsViaPerplexity({ url, domain, industry = "", location = "" }) {
   const out = await getKeywordsForPage({
     url: url || "",
     title: `New On-Page SEO opportunities for ${domain || url || "this site"}`,
@@ -649,9 +625,7 @@ async function fetchOnpageKeywordsViaPerplexity({
  * Build InfoPanel metrics without GSC:
  */
 function buildInfoPanel(unified) {
-  const domainAuthority = pickAuthorityScore(
-    unified?.openPageRank ?? unified?.authority ?? unified
-  );
+  const domainAuthority = pickAuthorityScore(unified?.openPageRank ?? unified?.authority ?? unified);
 
   const organicKeyword = Array.isArray(unified?.seoRows)
     ? unified.seoRows.length
@@ -661,21 +635,11 @@ function buildInfoPanel(unified) {
 
   const organicTraffic = null;
 
-  const baseline = {
-    domainAuthority: 40,
-    organicKeyword: 200,
-    organicTraffic: 0,
-  };
+  const baseline = { domainAuthority: 40, organicKeyword: 200, organicTraffic: 0 };
 
   const growth = {
-    domainAuthority: computePercentGrowth(
-      domainAuthority,
-      baseline.domainAuthority
-    ),
-    organicKeyword: computePercentGrowth(
-      organicKeyword,
-      baseline.organicKeyword
-    ),
+    domainAuthority: computePercentGrowth(domainAuthority, baseline.domainAuthority),
+    organicKeyword: computePercentGrowth(organicKeyword, baseline.organicKeyword),
     organicTraffic: 0,
   };
 
@@ -703,13 +667,7 @@ function buildInfoPanel(unified) {
       ? { label: "Needs Work", tone: "warning" }
       : { label: "Poor", tone: "danger" };
 
-  return {
-    domainAuthority,
-    organicKeyword,
-    organicTraffic,
-    growth,
-    badge,
-  };
+  return { domainAuthority, organicKeyword, organicTraffic, growth, badge };
 }
 
 // ✅ unify "seoRows" from different shapes safely
@@ -734,8 +692,7 @@ function mergeProviderResult(unified, providerKey, providerResult) {
   Object.assign(unified, providerResult);
 
   if (providerKey === "onpageKeywords") {
-    if (Array.isArray(providerResult?.seoRows))
-      unified.seoRows = providerResult.seoRows;
+    if (Array.isArray(providerResult?.seoRows)) unified.seoRows = providerResult.seoRows;
     if (Array.isArray(providerResult?.onpageKeywords))
       unified.onpageKeywords = providerResult.onpageKeywords;
     if (Array.isArray(providerResult?.onpageClusters))
@@ -744,9 +701,7 @@ function mergeProviderResult(unified, providerKey, providerResult) {
 
   if (providerKey === "authority" && unified.openPageRank == null) {
     unified.openPageRank =
-      providerResult?.authority ??
-      providerResult?.openPageRank ??
-      providerResult;
+      providerResult?.authority ?? providerResult?.openPageRank ?? providerResult;
   }
 
   ensureSeoRows(unified);
@@ -760,9 +715,7 @@ function mergeProviderResult(unified, providerKey, providerResult) {
 function normalizeForUi(unified) {
   if (unified?.serp && !unified?.serper) {
     unified.serper = {
-      organic: Array.isArray(unified.serp?.topResults)
-        ? unified.serp.topResults
-        : [],
+      organic: Array.isArray(unified.serp?.topResults) ? unified.serp.topResults : [],
       peopleAlsoAsk: Array.isArray(unified.serp?.peopleAlsoAsk)
         ? unified.serp.peopleAlsoAsk
         : [],
@@ -775,15 +728,9 @@ function normalizeForUi(unified) {
   }
 
   if (unified?.dataForSeo) {
-    if (!Array.isArray(unified.dataForSeo.backlinkDomains)) {
-      unified.dataForSeo.backlinkDomains = [];
-    }
-    if (typeof unified.dataForSeo.externalTotal !== "number") {
-      unified.dataForSeo.externalTotal = 0;
-    }
-    if (typeof unified.dataForSeo.totalDomains !== "number") {
-      unified.dataForSeo.totalDomains = 0;
-    }
+    if (!Array.isArray(unified.dataForSeo.backlinkDomains)) unified.dataForSeo.backlinkDomains = [];
+    if (typeof unified.dataForSeo.externalTotal !== "number") unified.dataForSeo.externalTotal = 0;
+    if (typeof unified.dataForSeo.totalDomains !== "number") unified.dataForSeo.totalDomains = 0;
   }
 
   ensureSeoRows(unified);
@@ -803,6 +750,12 @@ function needsBacklinkFallback(unified) {
   return false;
 }
 
+function isContentOnlyRequest(providers = []) {
+  const list = Array.isArray(providers) ? providers.filter(Boolean) : [];
+  if (!list.length) return false;
+  return list.every((p) => p === "content");
+}
+
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
@@ -818,18 +771,12 @@ export async function POST(request) {
     } = body || {};
 
     if (!url) {
-      return NextResponse.json(
-        { error: "Missing 'url' in request body" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing 'url' in request body" }, { status: 400 });
     }
 
     url = ensureHttpUrl(url);
     if (!url) {
-      return NextResponse.json(
-        { error: "Invalid 'url' in request body" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid 'url' in request body" }, { status: 400 });
     }
 
     const domain = getDomainFromUrl(url);
@@ -837,10 +784,67 @@ export async function POST(request) {
     const accept = request.headers.get("accept") || "";
     const wantsSSE = accept.includes("text/event-stream");
 
+    const contentOnly = isContentOnlyRequest(providers);
+
     // -------------------------
     // NORMAL JSON MODE
     // -------------------------
     if (!wantsSSE) {
+      // ✅ OPTION A FAST PATH: content-only requests return ASAP
+      if (contentOnly && !keywordsOnly) {
+        const unified = {};
+        try {
+          const content = await buildContentPayload(url);
+          unified.content = {
+            rawText: content.rawText || "",
+            html: content.html || "",
+            title: content.title || null,
+            source: content.source || (content.html ? "rendered" : "text_fallback"),
+          };
+        } catch (err) {
+          unified._errors = unified._errors || {};
+          unified._errors.contentPipeline = err?.message || "Content pipeline failed";
+        }
+
+        // still provide minimal normalized fields expected by UI
+        normalizeForUi(unified);
+
+        const rawText = (unified.content?.rawText || "").trim();
+        let recommendationsCount = 0;
+        let contentOppsCount = 0;
+        if (rawText) {
+          const wordCount = rawText.split(/\s+/).length;
+          recommendationsCount = Math.max(3, Math.round(wordCount / 300));
+          contentOppsCount = Math.max(1, Math.round(wordCount / 1200));
+        }
+
+        unified.issues = {
+          critical: 0,
+          warning: 0,
+          recommendations: recommendationsCount,
+          contentOpps: contentOppsCount,
+        };
+        unified.issuesGrowth = { critical: 0, warning: 0, recommendations: 0, contentOpps: 0 };
+        unified.infoPanel = buildInfoPanel(unified);
+
+        unified._meta = {
+          ...(unified._meta || {}),
+          url,
+          domain,
+          keyword: keyword || null,
+          countryCode,
+          languageCode,
+          depth,
+          providers,
+          keywordsOnly: Boolean(keywordsOnly),
+          generatedAt: new Date().toISOString(),
+          mode: "content_only_fast_path",
+        };
+
+        return NextResponse.json(unified);
+      }
+
+      // ---- normal (full) path ----
       const tasks = [];
 
       if (providers.includes("psi") && !keywordsOnly) {
@@ -854,34 +858,20 @@ export async function POST(request) {
 
               const technicalSeo = {
                 performanceScoreMobile:
-                  typeof mobile.performanceScore === "number"
-                    ? mobile.performanceScore
-                    : null,
+                  typeof mobile.performanceScore === "number" ? mobile.performanceScore : null,
                 performanceScoreDesktop:
-                  typeof desktop.performanceScore === "number"
-                    ? desktop.performanceScore
-                    : null,
-                coreWebVitals:
-                  mobile.coreWebVitalsLab || desktop.coreWebVitalsLab || {},
-                coreWebVitalsField:
-                  mobile.coreWebVitalsField || desktop.coreWebVitalsField || {},
+                  typeof desktop.performanceScore === "number" ? desktop.performanceScore : null,
+                coreWebVitals: mobile.coreWebVitalsLab || desktop.coreWebVitalsLab || {},
+                coreWebVitalsField: mobile.coreWebVitalsField || desktop.coreWebVitalsField || {},
                 issueCounts: {
-                  critical:
-                    (mobile.issueCounts?.critical ?? 0) +
-                    (desktop.issueCounts?.critical ?? 0),
-                  warning:
-                    (mobile.issueCounts?.warning ?? 0) +
-                    (desktop.issueCounts?.warning ?? 0),
+                  critical: (mobile.issueCounts?.critical ?? 0) + (desktop.issueCounts?.critical ?? 0),
+                  warning: (mobile.issueCounts?.warning ?? 0) + (desktop.issueCounts?.warning ?? 0),
                 },
               };
 
               return { key: "psi", ok: true, result: { technicalSeo } };
             } catch (error) {
-              return {
-                key: "psi",
-                ok: false,
-                error: error.message || "PSI failed",
-              };
+              return { key: "psi", ok: false, error: error.message || "PSI failed" };
             }
           })()
         );
@@ -926,24 +916,19 @@ export async function POST(request) {
               const industry = String(body?.industry || "").trim();
               const location = String(body?.location || "").trim();
 
-              const { keywords, clusters } =
-                await fetchOnpageKeywordsViaPerplexity({
-                  url,
-                  domain,
-                  industry,
-                  location,
-                });
+              const { keywords, clusters } = await fetchOnpageKeywordsViaPerplexity({
+                url,
+                domain,
+                industry,
+                location,
+              });
 
               const seoRows = buildOnpageSeoRowsFromKeywords(keywords, domain);
 
               return {
                 key: "onpageKeywords",
                 ok: true,
-                result: {
-                  seoRows,
-                  onpageKeywords: keywords,
-                  onpageClusters: clusters,
-                },
+                result: { seoRows, onpageKeywords: keywords, onpageClusters: clusters },
               };
             } catch (error) {
               return {
@@ -971,18 +956,12 @@ export async function POST(request) {
       }, {});
 
       // ✅ RapidAPI fallback for backlinks/ref domains (only when needed)
-      if (
-        providers.includes("dataforseo") &&
-        domain &&
-        !keywordsOnly &&
-        needsBacklinkFallback(unified)
-      ) {
+      if (providers.includes("dataforseo") && domain && !keywordsOnly && needsBacklinkFallback(unified)) {
         try {
           const rapid = await fetchRapidApiBacklinkFallback(domain);
 
           unified.dataForSeo = unified.dataForSeo || {};
-          unified.dataForSeo.backlinksSummary =
-            unified.dataForSeo.backlinksSummary || {};
+          unified.dataForSeo.backlinksSummary = unified.dataForSeo.backlinksSummary || {};
 
           unified.dataForSeo.backlinksSummary.backlinks =
             toNumber(unified.dataForSeo.backlinksSummary.backlinks) ?? 0;
@@ -1002,42 +981,30 @@ export async function POST(request) {
           }
         } catch (e) {
           unified._errors = unified._errors || {};
-          unified._errors.rapidapi =
-            e?.message || "RapidAPI backlink fallback failed";
+          unified._errors.rapidapi = e?.message || "RapidAPI backlink fallback failed";
         }
       }
 
       // -----------------------------------------
-      // 2. CONTENT PIPELINE
+      // CONTENT PIPELINE (kept for full calls)
       // -----------------------------------------
       if (providers.includes("content") && !keywordsOnly) {
         try {
           const content = await buildContentPayload(url);
-
-          if (content?.html || content?.title || content?.rawText) {
-            unified.content = {
-              rawText: content.rawText || "",
-              html: content.html || "",
-              title: content.title || null,
-              source: content.source || (content.html ? "rendered" : "text_fallback"),
-            };
-          } else {
-            unified._warnings = unified._warnings || [];
-            unified._warnings.push("No title/html/text extracted (content empty)");
-          }
+          unified.content = {
+            rawText: content.rawText || "",
+            html: content.html || "",
+            title: content.title || null,
+            source: content.source || (content.html ? "rendered" : "text_fallback"),
+          };
         } catch (err) {
           unified._errors = unified._errors || {};
-          unified._errors.contentPipeline =
-            err?.message || "Content pipeline failed";
+          unified._errors.contentPipeline = err?.message || "Content pipeline failed";
         }
       }
 
-      // ✅ normalize shapes for UI consumers
       normalizeForUi(unified);
 
-      // -----------------------------------------
-      // 3. NORMALIZED ISSUE COUNTS FOR DASHBOARD
-      // -----------------------------------------
       const technicalIssueCounts = unified.technicalSeo?.issueCounts || {};
 
       let recommendationsCount = 0;
@@ -1051,45 +1018,19 @@ export async function POST(request) {
       }
 
       unified.issues = {
-        critical:
-          typeof technicalIssueCounts.critical === "number"
-            ? technicalIssueCounts.critical
-            : 0,
-        warning:
-          typeof technicalIssueCounts.warning === "number"
-            ? technicalIssueCounts.warning
-            : 0,
+        critical: typeof technicalIssueCounts.critical === "number" ? technicalIssueCounts.critical : 0,
+        warning: typeof technicalIssueCounts.warning === "number" ? technicalIssueCounts.warning : 0,
         recommendations: recommendationsCount,
         contentOpps: contentOppsCount,
       };
 
-      // -----------------------------------------
-      // 4. MOCKED GROWTH PERCENTAGES FOR DASHBOARD
-      // -----------------------------------------
-      const baselineIssues = {
-        critical: 274,
-        warning: 883,
-        recommendations: 77,
-        contentOpps: 5,
-      };
+      const baselineIssues = { critical: 274, warning: 883, recommendations: 77, contentOpps: 5 };
 
       unified.issuesGrowth = {
-        critical: computePercentGrowth(
-          unified.issues.critical,
-          baselineIssues.critical
-        ),
-        warning: computePercentGrowth(
-          unified.issues.warning,
-          baselineIssues.warning
-        ),
-        recommendations: computePercentGrowth(
-          unified.issues.recommendations,
-          baselineIssues.recommendations
-        ),
-        contentOpps: computePercentGrowth(
-          unified.issues.contentOpps,
-          baselineIssues.contentOpps
-        ),
+        critical: computePercentGrowth(unified.issues.critical, baselineIssues.critical),
+        warning: computePercentGrowth(unified.issues.warning, baselineIssues.warning),
+        recommendations: computePercentGrowth(unified.issues.recommendations, baselineIssues.recommendations),
+        contentOpps: computePercentGrowth(unified.issues.contentOpps, baselineIssues.contentOpps),
       };
 
       unified.infoPanel = buildInfoPanel(unified);
@@ -1147,47 +1088,94 @@ export async function POST(request) {
             }
           };
 
+          // ✅ OPTION A FAST PATH in SSE too
+          if (contentOnly && !keywordsOnly) {
+            const contentRes = await runProvider(
+              "content",
+              "Extracting page content (MAIN content + rendered HTML, image-free)…",
+              async () => {
+                return await buildContentPayload(url);
+              }
+            );
+
+            if (contentRes.ok) {
+              unified.content = {
+                rawText: contentRes.result?.rawText || "",
+                html: contentRes.result?.html || "",
+                title: contentRes.result?.title || null,
+                source:
+                  contentRes.result?.source ||
+                  (contentRes.result?.html ? "rendered" : "text_fallback"),
+              };
+            } else {
+              unified._errors = unified._errors || {};
+              unified._errors.contentPipeline = contentRes.error;
+            }
+
+            normalizeForUi(unified);
+
+            const rawText = (unified.content?.rawText || "").trim();
+            let recommendationsCount = 0;
+            let contentOppsCount = 0;
+            if (rawText) {
+              const wordCount = rawText.split(/\s+/).length;
+              recommendationsCount = Math.max(3, Math.round(wordCount / 300));
+              contentOppsCount = Math.max(1, Math.round(wordCount / 1200));
+            }
+
+            unified.issues = {
+              critical: 0,
+              warning: 0,
+              recommendations: recommendationsCount,
+              contentOpps: contentOppsCount,
+            };
+            unified.issuesGrowth = { critical: 0, warning: 0, recommendations: 0, contentOpps: 0 };
+            unified.infoPanel = buildInfoPanel(unified);
+
+            unified._meta = {
+              ...(unified._meta || {}),
+              url,
+              domain,
+              keyword: keyword || null,
+              countryCode,
+              languageCode,
+              depth,
+              providers,
+              keywordsOnly: Boolean(keywordsOnly),
+              generatedAt: new Date().toISOString(),
+              mode: "content_only_fast_path",
+            };
+
+            send("done", { unified });
+            controller.close();
+            return;
+          }
+
           const corePromises = [];
 
           if (providers.includes("psi") && !keywordsOnly) {
             corePromises.push(
-              runProvider(
-                "psi",
-                "Fetching PageSpeed Insights (mobile + desktop)…",
-                async () => {
-                  const [mobile, desktop] = await Promise.all([
-                    fetchPsiForStrategy(url, "mobile"),
-                    fetchPsiForStrategy(url, "desktop"),
-                  ]);
+              runProvider("psi", "Fetching PageSpeed Insights (mobile + desktop)…", async () => {
+                const [mobile, desktop] = await Promise.all([
+                  fetchPsiForStrategy(url, "mobile"),
+                  fetchPsiForStrategy(url, "desktop"),
+                ]);
 
-                  const technicalSeo = {
-                    performanceScoreMobile:
-                      typeof mobile.performanceScore === "number"
-                        ? mobile.performanceScore
-                        : null,
-                    performanceScoreDesktop:
-                      typeof desktop.performanceScore === "number"
-                        ? desktop.performanceScore
-                        : null,
-                    coreWebVitals:
-                      mobile.coreWebVitalsLab || desktop.coreWebVitalsLab || {},
-                    coreWebVitalsField:
-                      mobile.coreWebVitalsField ||
-                      desktop.coreWebVitalsField ||
-                      {},
-                    issueCounts: {
-                      critical:
-                        (mobile.issueCounts?.critical ?? 0) +
-                        (desktop.issueCounts?.critical ?? 0),
-                      warning:
-                        (mobile.issueCounts?.warning ?? 0) +
-                        (desktop.issueCounts?.warning ?? 0),
-                    },
-                  };
+                const technicalSeo = {
+                  performanceScoreMobile:
+                    typeof mobile.performanceScore === "number" ? mobile.performanceScore : null,
+                  performanceScoreDesktop:
+                    typeof desktop.performanceScore === "number" ? desktop.performanceScore : null,
+                  coreWebVitals: mobile.coreWebVitalsLab || desktop.coreWebVitalsLab || {},
+                  coreWebVitalsField: mobile.coreWebVitalsField || desktop.coreWebVitalsField || {},
+                  issueCounts: {
+                    critical: (mobile.issueCounts?.critical ?? 0) + (desktop.issueCounts?.critical ?? 0),
+                    warning: (mobile.issueCounts?.warning ?? 0) + (desktop.issueCounts?.warning ?? 0),
+                  },
+                };
 
-                  return { technicalSeo };
-                }
-              )
+                return { technicalSeo };
+              })
             );
           }
 
@@ -1235,21 +1223,29 @@ export async function POST(request) {
                   const industry = String(body?.industry || "").trim();
                   const location = String(body?.location || "").trim();
 
-                  const { keywords, clusters } =
-                    await fetchOnpageKeywordsViaPerplexity({
-                      url,
-                      domain,
-                      industry,
-                      location,
-                    });
+                  const { keywords, clusters } = await fetchOnpageKeywordsViaPerplexity({
+                    url,
+                    domain,
+                    industry,
+                    location,
+                  });
 
                   const seoRows = buildOnpageSeoRowsFromKeywords(keywords, domain);
 
-                  return {
-                    seoRows,
-                    onpageKeywords: keywords,
-                    onpageClusters: clusters,
-                  };
+                  return { seoRows, onpageKeywords: keywords, onpageClusters: clusters };
+                }
+              )
+            );
+          }
+
+          // content (for full SSE calls)
+          if (providers.includes("content") && !keywordsOnly) {
+            corePromises.push(
+              runProvider(
+                "content",
+                "Extracting page content (MAIN content + rendered HTML, image-free)…",
+                async () => {
+                  return await buildContentPayload(url);
                 }
               )
             );
@@ -1259,7 +1255,16 @@ export async function POST(request) {
 
           for (const item of coreResults) {
             if (item.ok && item.result) {
-              mergeProviderResult(unified, item.key, item.result);
+              if (item.key === "content") {
+                unified.content = {
+                  rawText: item.result?.rawText || "",
+                  html: item.result?.html || "",
+                  title: item.result?.title || null,
+                  source: item.result?.source || (item.result?.html ? "rendered" : "text_fallback"),
+                };
+              } else {
+                mergeProviderResult(unified, item.key, item.result);
+              }
             } else if (!item.ok) {
               unified._errors = unified._errors || {};
               unified._errors[item.key] = item.error;
@@ -1267,30 +1272,17 @@ export async function POST(request) {
           }
 
           // ✅ RapidAPI fallback in SSE mode
-          if (
-            providers.includes("dataforseo") &&
-            domain &&
-            !keywordsOnly &&
-            needsBacklinkFallback(unified)
-          ) {
-            send("status", {
-              stage: "rapidapi",
-              state: "start",
-              message: "Falling back for backlink metrics…",
-            });
+          if (providers.includes("dataforseo") && domain && !keywordsOnly && needsBacklinkFallback(unified)) {
+            send("status", { stage: "rapidapi", state: "start", message: "Falling back for backlink metrics…" });
 
             try {
               const rapid = await fetchRapidApiBacklinkFallback(domain);
 
               unified.dataForSeo = unified.dataForSeo || {};
-              unified.dataForSeo.backlinksSummary =
-                unified.dataForSeo.backlinksSummary || {};
+              unified.dataForSeo.backlinksSummary = unified.dataForSeo.backlinksSummary || {};
 
-              const b =
-                toNumber(unified.dataForSeo.backlinksSummary.backlinks) ?? 0;
-              const rd =
-                toNumber(unified.dataForSeo.backlinksSummary.referring_domains) ??
-                0;
+              const b = toNumber(unified.dataForSeo.backlinksSummary.backlinks) ?? 0;
+              const rd = toNumber(unified.dataForSeo.backlinksSummary.referring_domains) ?? 0;
 
               if (b === 0 && rd === 0) {
                 unified.dataForSeo.backlinksSummary = {
@@ -1301,80 +1293,17 @@ export async function POST(request) {
                 unified._meta.backlinksFallback = "rapidapi";
               }
 
-              send("status", {
-                stage: "rapidapi",
-                state: "done",
-                message: "Backlink fallback applied",
-              });
+              send("status", { stage: "rapidapi", state: "done", message: "Backlink fallback applied" });
             } catch (e) {
               unified._errors = unified._errors || {};
-              unified._errors.rapidapi =
-                e?.message || "RapidAPI backlink fallback failed";
-
-              send("status", {
-                stage: "rapidapi",
-                state: "error",
-                message: unified._errors.rapidapi,
-              });
-            }
-          }
-
-          // 2) Content pipeline
-          if (providers.includes("content") && !keywordsOnly) {
-            send("status", {
-              stage: "content",
-              state: "start",
-              message:
-                "Extracting page content (MAIN content + rendered HTML, image-free)…",
-            });
-
-            try {
-              const content = await buildContentPayload(url);
-
-              if (content?.html || content?.title || content?.rawText) {
-                unified.content = {
-                  rawText: content.rawText || "",
-                  html: content.html || "",
-                  title: content.title || null,
-                  source:
-                    content.source || (content.html ? "rendered" : "text_fallback"),
-                };
-
-                send("status", {
-                  stage: "content",
-                  state: "done",
-                  message: "Content extracted",
-                });
-              } else {
-                unified._warnings = unified._warnings || [];
-                unified._warnings.push(
-                  "No title/html/text extracted (content empty)"
-                );
-                send("status", {
-                  stage: "content",
-                  state: "done",
-                  message: "No content extracted (continuing)",
-                });
-              }
-            } catch (err) {
-              unified._errors = unified._errors || {};
-              unified._errors.contentPipeline =
-                err?.message || "Content pipeline failed";
-              send("status", {
-                stage: "content",
-                state: "error",
-                message: err?.message || "Content pipeline failed",
-              });
+              unified._errors.rapidapi = e?.message || "RapidAPI backlink fallback failed";
+              send("status", { stage: "rapidapi", state: "error", message: unified._errors.rapidapi });
             }
           }
 
           normalizeForUi(unified);
 
-          send("status", {
-            stage: "finalize",
-            state: "start",
-            message: "Finalizing dashboard metrics…",
-          });
+          send("status", { stage: "finalize", state: "start", message: "Finalizing dashboard metrics…" });
 
           const technicalIssueCounts = unified.technicalSeo?.issueCounts || {};
 
@@ -1389,42 +1318,19 @@ export async function POST(request) {
           }
 
           unified.issues = {
-            critical:
-              typeof technicalIssueCounts.critical === "number"
-                ? technicalIssueCounts.critical
-                : 0,
-            warning:
-              typeof technicalIssueCounts.warning === "number"
-                ? technicalIssueCounts.warning
-                : 0,
+            critical: typeof technicalIssueCounts.critical === "number" ? technicalIssueCounts.critical : 0,
+            warning: typeof technicalIssueCounts.warning === "number" ? technicalIssueCounts.warning : 0,
             recommendations: recommendationsCount,
             contentOpps: contentOppsCount,
           };
 
-          const baselineIssues = {
-            critical: 274,
-            warning: 883,
-            recommendations: 77,
-            contentOpps: 5,
-          };
+          const baselineIssues = { critical: 274, warning: 883, recommendations: 77, contentOpps: 5 };
 
           unified.issuesGrowth = {
-            critical: computePercentGrowth(
-              unified.issues.critical,
-              baselineIssues.critical
-            ),
-            warning: computePercentGrowth(
-              unified.issues.warning,
-              baselineIssues.warning
-            ),
-            recommendations: computePercentGrowth(
-              unified.issues.recommendations,
-              baselineIssues.recommendations
-            ),
-            contentOpps: computePercentGrowth(
-              unified.issues.contentOpps,
-              baselineIssues.contentOpps
-            ),
+            critical: computePercentGrowth(unified.issues.critical, baselineIssues.critical),
+            warning: computePercentGrowth(unified.issues.warning, baselineIssues.warning),
+            recommendations: computePercentGrowth(unified.issues.recommendations, baselineIssues.recommendations),
+            contentOpps: computePercentGrowth(unified.issues.contentOpps, baselineIssues.contentOpps),
           };
 
           unified.infoPanel = buildInfoPanel(unified);
