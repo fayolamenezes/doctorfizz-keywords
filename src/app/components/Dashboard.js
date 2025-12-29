@@ -4,7 +4,6 @@ import Image from "next/image";
 import { Activity, ActivitySquare, AlertTriangle, BarChart3, BookOpen, Check, ChevronRight, Clock3, Eye, FileText, Gauge, Goal, HelpCircle, KeyRound, Lightbulb, Link2, Lock, Monitor, Network, PencilLine, RefreshCw, Rocket, Settings, ShieldCheck, Skull, SlidersHorizontal, Smartphone, SquareArrowOutUpRight, ThumbsDown, ThumbsUp, TrendingUp, TrendingDown, Wifi, X } from "lucide-react";
 import { useEffect, useRef, useState, useMemo , useCallback} from "react";
 import { useSearchParams } from "next/navigation";
-import OpportunitiesSection from "./OpportunitiesSection";
 import NewOnPageSEOTable from "./NewOnPageSEOTable";
 import DashboardHeader from "./DashboardHeader";
 
@@ -272,20 +271,29 @@ function formatCompactNumber(n) {
   return sign + Math.round(v).toString();
 }
 
-/** Small source pill that shows ONLY a number; on hover it reveals the source (GA4/GSC). */
-function SourcePill({ value, source }) {
+/** Small source pill for GA4/GSC badges.
+ * - Always renders.
+ * - label can be a number, "?" or a spinner.
+ * - tooltip shows helper text on hover.
+ * - optional onClick (e.g., connect Google).
+ */
+function SourcePill({ label, tooltip, onClick }) {
+  const clickable = typeof onClick === "function";
   return (
     <div className="relative group">
       <div
-        className="inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--input)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)] cursor-help tabular-nums"
-        aria-label={source}
-        title={source}
+        className={`inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--input)] px-2 py-0.5 text-[11px] font-medium text-[var(--muted)] tabular-nums ${
+          clickable ? "cursor-pointer" : "cursor-help"
+        }`}
+        aria-label={tooltip}
+        title={tooltip}
+        onClick={onClick}
       >
-        {value}
+        {label}
       </div>
 
       <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-1 w-max -translate-x-1/2 rounded-md bg-black px-2 py-1 text-[11px] text-white opacity-0 shadow transition-opacity group-hover:opacity-100">
-        {source}
+        {tooltip}
       </div>
     </div>
   );
@@ -1750,6 +1758,26 @@ const seoTableProg = Math.max(0, prog);
   const blogCards = selected?.content?.blog ?? [];
   const pageCards = selected?.content?.pages ?? [];
 
+  const isMeaningfulOpp = (c) => {
+  const title = String(c?.title || "").trim();
+  if (!title) return false;
+  // Treat placeholders as "not fetched"
+  if (title.toLowerCase() === "untitled") return false;
+  return true;
+};
+
+const showBlogs = Array.isArray(blogCards) && blogCards.some(isMeaningfulOpp);
+const showPages = Array.isArray(pageCards) && pageCards.some(isMeaningfulOpp);
+
+
+  function EmptyOppState({ label }) {
+    return (
+      <div className="relative rounded-[18px] border border-[var(--border)] bg-[var(--input)] p-6 shadow-sm flex items-center justify-center min-h-[180px] text-sm text-[var(--muted)]">
+        {label}
+      </div>
+    );
+  }
+
 
 // ====== Small UI helpers (unchanged, except table rows can be dataset-driven) ======
 // ====== Small UI helpers (unchanged, except table rows can be dataset-driven) ======
@@ -2625,12 +2653,37 @@ const seoTableProg = Math.max(0, prog);
                 {formatCompactNumber(otValue)}
               </div>
 
-              {typeof googlePerf.ga4TrafficMonthly === "number" ? (
-                <SourcePill
-                  value={formatCompactNumber(googlePerf.ga4TrafficMonthly)}
-                  source="GA4"
-                />
-              ) : null}
+              {
+                /* Google badge: always visible (? → spinner → value) */
+              }
+              <SourcePill
+                label={
+                  googleStatus.loading ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : !googleStatus.connected ? (
+                    "?"
+                  ) : ga4Loading ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : (
+                    formatCompactNumber(
+                      typeof googlePerf.ga4TrafficMonthly === "number" && Number.isFinite(googlePerf.ga4TrafficMonthly)
+                        ? googlePerf.ga4TrafficMonthly
+                        : 0
+                    )
+                  )
+                }
+                tooltip={
+                  googleStatus.loading
+                    ? "Checking Google connection…"
+                    : !googleStatus.connected
+                    ? "Connect to Google account"
+                    : ga4Loading
+                    ? "Fetching GA4…"
+                    : "GA4"
+                }
+                onClick={!googleStatus.connected ? connectGoogle : undefined}
+              />
+
 
               <div className="ml-1 inline-flex items-center gap-1 rounded-full bg-[#EAF8F1] px-2 py-0.5 text-[11px] font-medium text-[#178A5D]">
                 ↗︎ +{basePerf?.organicTraffic?.growth ?? 0}
@@ -2694,12 +2747,37 @@ const seoTableProg = Math.max(0, prog);
                 {formatCompactNumber(okValue)}
               </div>
 
-              {typeof googlePerf.gscKeywordsTotal === "number" ? (
-                <SourcePill
-                  value={formatCompactNumber(googlePerf.gscKeywordsTotal)}
-                  source="GSC"
-                />
-              ) : null}
+              {
+                /* Google badge: always visible (? → spinner → value) */
+              }
+              <SourcePill
+                label={
+                  googleStatus.loading ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : !googleStatus.connected ? (
+                    "?"
+                  ) : gscLoading ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : (
+                    formatCompactNumber(
+                      typeof googlePerf.gscKeywordsTotal === "number" && Number.isFinite(googlePerf.gscKeywordsTotal)
+                        ? googlePerf.gscKeywordsTotal
+                        : 0
+                    )
+                  )
+                }
+                tooltip={
+                  googleStatus.loading
+                    ? "Checking Google connection…"
+                    : !googleStatus.connected
+                    ? "Connect to Google account"
+                    : gscLoading
+                    ? "Fetching GSC…"
+                    : "GSC"
+                }
+                onClick={!googleStatus.connected ? connectGoogle : undefined}
+              />
+
             </div>
 
             <div className="mt-4 space-y-2">
@@ -2807,12 +2885,37 @@ const seoTableProg = Math.max(0, prog);
                       {formatNumber(totalLeadsAnimated)}
                     </div>
 
-                    {typeof googlePerf.ga4LeadsMonthly === "number" ? (
-                      <SourcePill
-                        value={formatCompactNumber(googlePerf.ga4LeadsMonthly)}
-                        source="GA4"
-                      />
-                    ) : null}
+                    {
+                /* Google badge: always visible (? → spinner → value) */
+              }
+              <SourcePill
+                label={
+                  googleStatus.loading ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : !googleStatus.connected ? (
+                    "?"
+                  ) : ga4Loading ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : (
+                    formatCompactNumber(
+                      typeof googlePerf.ga4LeadsMonthly === "number" && Number.isFinite(googlePerf.ga4LeadsMonthly)
+                        ? googlePerf.ga4LeadsMonthly
+                        : 0
+                    )
+                  )
+                }
+                tooltip={
+                  googleStatus.loading
+                    ? "Checking Google connection…"
+                    : !googleStatus.connected
+                    ? "Connect to Google account"
+                    : ga4Loading
+                    ? "Fetching GA4…"
+                    : "GA4"
+                }
+                onClick={!googleStatus.connected ? connectGoogle : undefined}
+              />
+
                   </div>
 
                   {/* Goals */}
@@ -3150,7 +3253,72 @@ const seoTableProg = Math.max(0, prog);
           </div>
         </section>
 
-        <OpportunitiesSection onOpenContentEditor={onOpenContentEditor} />
+        {/* Top On-Page Content Opportunities */}
+        <section className="mt-8">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="h-9 w-9 rounded-2xl border border-[var(--border)] bg-[var(--card)] flex items-center justify-center">
+                <BookOpen size={18} className="text-[var(--muted)]" />
+              </div>
+              <div>
+                <div className="text-sm font-semibold text-[var(--text)]">Top On-Page Content Opportunities</div>
+                <div className="text-[12px] text-[var(--muted)]">Blogs and pages you can publish next.</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold tracking-wide text-[var(--muted)]">
+              BLOG
+            </div>
+
+            {showBlogs ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {blogCards.map((b, i) => (
+                  <OpportunityCard
+                    key={`blog-${i}-${b?.title || "untitled"}`}
+                    title={b?.title || "Untitled"}
+                    score={typeof b?.score === "number" ? b.score : 0}
+                    wordCount={typeof b?.wordCount === "number" ? b.wordCount : 0}
+                    keywords={typeof b?.keywords === "number" ? b.keywords : 0}
+                    status={b?.status || "Draft"}
+                    progress={prog}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <EmptyOppState label="No blogs available" />
+              </div>
+            )}
+          </div>
+
+          <div className="mt-7">
+            <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold tracking-wide text-[var(--muted)]">
+              PAGES
+            </div>
+
+            {showPages ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {pageCards.map((p, i) => (
+                  <OpportunityCard
+                    key={`page-${i}-${p?.title || "untitled"}`}
+                    title={p?.title || "Untitled"}
+                    score={typeof p?.score === "number" ? p.score : 0}
+                    wordCount={typeof p?.wordCount === "number" ? p.wordCount : 0}
+                    keywords={typeof p?.keywords === "number" ? p.keywords : 0}
+                    status={p?.status || "Draft"}
+                    progress={prog}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <EmptyOppState label="No pages available" />
+              </div>
+            )}
+          </div>
+        </section>
 
 {/* New on page SEO opportunity (table) */}
 <NewOnPageSEOTable rows={seoRowsForTable} progress={seoTableProg} />
