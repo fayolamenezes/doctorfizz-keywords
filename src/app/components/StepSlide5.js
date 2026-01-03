@@ -47,6 +47,53 @@ export default function StepSlide5({
     return s.replace(/^www\./, "");
   }, []);
 
+  // ✅ NEW: allow only "host-like" values (domains/hostnames), not brand names
+  const isHostLike = useCallback((host) => {
+    const h = String(host || "").trim().toLowerCase();
+    if (!h) return false;
+
+    // Allow IPv4 (e.g. 192.168.1.1)
+    const isIPv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(h);
+
+    // Allow typical hostnames/domains only if they contain a dot (e.g. example.com)
+    const hasDot = h.includes(".");
+
+    return isIPv4 || hasDot;
+  }, []);
+
+  // ✅ NEW: normalize + filter + dedupe (domains/hostnames only)
+  const sanitizeList = useCallback(
+    (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const seen = new Set();
+
+      return arr
+        .map((x) => normalizeHost(String(x || "")) || "")
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean)
+        .filter((h) => isHostLike(h))
+        .filter((h) => {
+          if (seen.has(h)) return false;
+          seen.add(h);
+          return true;
+        });
+    },
+    [normalizeHost, isHostLike]
+  );
+
+  // ✅ NEW: insert newly added host into suggestions (before "More"), keep "More" last
+  const insertBeforeMore = useCallback(
+    (prev, host) => {
+      const list = Array.isArray(prev) ? prev.filter(Boolean) : [];
+      const withoutMore = list.filter((x) => x !== "More");
+
+      const next = sanitizeList([host, ...withoutMore]);
+      // keep UI tidy; you can change 8 to whatever you prefer
+      return next.slice(0, 8).concat("More");
+    },
+    [sanitizeList]
+  );
+
   const getStoredJson = useCallback((key) => {
     try {
       const raw = localStorage.getItem(key) ?? sessionStorage.getItem(key);
@@ -146,10 +193,18 @@ export default function StepSlide5({
         const storedKey = localStorage.getItem("drfizz.bootstrap.key") || "";
 
         if (cached && storedKey === expectedKey && cached?.competitors) {
-          const biz = Array.isArray(cached.competitors.businessCompetitors) ? cached.competitors.businessCompetitors : [];
-          const ser = Array.isArray(cached.competitors.searchCompetitors) ? cached.competitors.searchCompetitors : [];
+          const bizRaw = Array.isArray(cached.competitors.businessCompetitors)
+            ? cached.competitors.businessCompetitors
+            : [];
+          const serRaw = Array.isArray(cached.competitors.searchCompetitors)
+            ? cached.competitors.searchCompetitors
+            : [];
 
-          const bizSet = new Set(biz.map((x) => String(x).toLowerCase().trim()));
+          // ✅ enforce hostnames only
+          const biz = sanitizeList(bizRaw);
+          const ser = sanitizeList(serRaw);
+
+          const bizSet = new Set(biz);
           const serFiltered = ser.filter((x) => !bizSet.has(String(x).toLowerCase().trim()));
 
           const bizFinal = biz.slice(0, 4);
@@ -184,10 +239,14 @@ export default function StepSlide5({
         if (!res.ok) throw new Error(`Failed to load competitors (${res.status})`);
 
         const data = await res.json();
-        const biz = Array.isArray(data.businessCompetitors) ? data.businessCompetitors : [];
-        const ser = Array.isArray(data.searchCompetitors) ? data.searchCompetitors : [];
+        const bizRaw = Array.isArray(data.businessCompetitors) ? data.businessCompetitors : [];
+        const serRaw = Array.isArray(data.searchCompetitors) ? data.searchCompetitors : [];
 
-        const bizSet = new Set(biz.map((x) => String(x).toLowerCase().trim()));
+        // ✅ enforce hostnames only
+        const biz = sanitizeList(bizRaw);
+        const ser = sanitizeList(serRaw);
+
+        const bizSet = new Set(biz);
         const serFiltered = ser.filter((x) => !bizSet.has(String(x).toLowerCase().trim()));
 
         const bizFinal = biz.slice(0, 4);
@@ -209,8 +268,10 @@ export default function StepSlide5({
     }
 
     load();
-    return () => { isMounted = false; };
-  }, [getTargetSite, getContext, readBootstrap, makeKey]);
+    return () => {
+      isMounted = false;
+    };
+  }, [getTargetSite, getContext, readBootstrap, makeKey, sanitizeList]);
 
   const recomputePanelHeight = () => {
     if (!panelRef.current) return;
@@ -244,8 +305,13 @@ export default function StepSlide5({
       setTimeout(() => document.getElementById("biz-more-input")?.focus(), 50);
       return;
     }
+
+    // ✅ ensure only hostnames get selected (defensive)
+    const host = normalizeHost(String(label || ""));
+    if (!host || !isHostLike(host)) return;
+
     setSelectedBusinessCompetitors((prev) =>
-      prev.includes(label) ? prev.filter((c) => c !== label) : [...prev, label]
+      prev.includes(host) ? prev.filter((c) => c !== host) : [...prev, host]
     );
   };
 
@@ -256,39 +322,54 @@ export default function StepSlide5({
       setTimeout(() => document.getElementById("search-more-input")?.focus(), 50);
       return;
     }
+
+    // ✅ ensure only hostnames get selected (defensive)
+    const host = normalizeHost(String(label || ""));
+    if (!host || !isHostLike(host)) return;
+
     setSelectedSearchCompetitors((prev) =>
-      prev.includes(label) ? prev.filter((c) => c !== label) : [...prev, label]
+      prev.includes(host) ? prev.filter((c) => c !== host) : [...prev, host]
     );
   };
 
   const addCustomBusiness = () => {
-    const v = bizInput.trim();
-    if (v && !selectedBusinessCompetitors.includes(v)) {
-      setSelectedBusinessCompetitors((prev) => [...prev, v]);
+    const host = normalizeHost(String(bizInput || ""));
+    if (host && isHostLike(host) && !selectedBusinessCompetitors.includes(host)) {
+      setSelectedBusinessCompetitors((prev) => [...prev, host]);
+      // ✅ NEW: show immediately in chip list (before "More")
+      setBusinessSuggestions((prev) => insertBeforeMore(prev, host));
     }
     setBizInput("");
     setTimeout(() => document.getElementById("biz-more-input")?.focus(), 50);
   };
 
   const addCustomSearch = () => {
-    const v = searchInput.trim();
-    if (v && !selectedSearchCompetitors.includes(v)) {
-      setSelectedSearchCompetitors((prev) => [...prev, v]);
+    const host = normalizeHost(String(searchInput || ""));
+    if (host && isHostLike(host) && !selectedSearchCompetitors.includes(host)) {
+      setSelectedSearchCompetitors((prev) => [...prev, host]);
+      // ✅ NEW: show immediately in chip list (before "More")
+      setSearchSuggestions((prev) => insertBeforeMore(prev, host));
     }
     setSearchInput("");
     setTimeout(() => document.getElementById("search-more-input")?.focus(), 50);
   };
 
   useEffect(() => {
-    const bizSet = new Set(selectedBusinessCompetitors.map((x) => String(x).toLowerCase().trim()));
-    const searchClean = selectedSearchCompetitors.filter((x) => !bizSet.has(String(x).toLowerCase().trim()));
-    const totalSelected = selectedBusinessCompetitors.length + searchClean.length;
+    // ✅ sanitize selected lists before submit (and dedupe)
+    const bizCleanList = sanitizeList(selectedBusinessCompetitors);
+    const bizSet = new Set(bizCleanList.map((x) => String(x).toLowerCase().trim()));
+
+    const searchCleanList = sanitizeList(selectedSearchCompetitors).filter(
+      (x) => !bizSet.has(String(x).toLowerCase().trim())
+    );
+
+    const totalSelected = bizCleanList.length + searchCleanList.length;
 
     if (totalSelected > 0) {
       const payload = {
-        businessCompetitors: selectedBusinessCompetitors,
-        searchCompetitors: searchClean,
-        totalCompetitors: [...selectedBusinessCompetitors, ...searchClean],
+        businessCompetitors: bizCleanList,
+        searchCompetitors: searchCleanList,
+        totalCompetitors: [...bizCleanList, ...searchCleanList],
       };
       const curr = JSON.stringify(payload);
       if (curr !== JSON.stringify(lastSubmittedData.current)) {
@@ -300,7 +381,7 @@ export default function StepSlide5({
       setShowSummary(false);
       onCompetitorSubmit?.({ businessCompetitors: [], searchCompetitors: [], totalCompetitors: [] });
     }
-  }, [selectedBusinessCompetitors, selectedSearchCompetitors, onCompetitorSubmit]);
+  }, [selectedBusinessCompetitors, selectedSearchCompetitors, onCompetitorSubmit, sanitizeList]);
 
   useEffect(() => {
     if (tailRef.current) {
@@ -327,8 +408,16 @@ export default function StepSlide5({
           {!isSelected && <Plus size={16} className="ml-1 flex-shrink-0" />}
           {isSelected && (
             <span className="relative ml-1 inline-flex w-4 h-4 items-center justify-center flex-shrink-0">
-              <Check size={16} className="absolute opacity-100 group-hover:opacity-0 transition-opacity duration-150" style={{ color: "#d45427" }} />
-              <X size={16} className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150" style={{ color: "#d45427" }} />
+              <Check
+                size={16}
+                className="absolute opacity-100 group-hover:opacity-0 transition-opacity duration-150"
+                style={{ color: "#d45427" }}
+              />
+              <X
+                size={16}
+                className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+                style={{ color: "#d45427" }}
+              />
             </span>
           )}
         </>

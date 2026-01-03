@@ -119,6 +119,23 @@ export default function StepSlide4({
     }
   }, []);
 
+  // ✅ NEW: inject custom keyword into suggestions (before "More"), keep "More" last
+  const insertKeywordBeforeMore = useCallback((prev, keyword) => {
+    const list = Array.isArray(prev) ? prev.filter(Boolean) : [];
+    const withoutMore = list.filter((k) => k !== "More");
+
+    const seen = new Set();
+    const next = [keyword, ...withoutMore].filter((k) => {
+      const key = String(k || "").trim().toLowerCase();
+      if (!key) return false;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return next.slice(0, 8).concat("More");
+  }, []);
+
   useEffect(() => {
     let active = true;
 
@@ -247,11 +264,16 @@ export default function StepSlide4({
 
   const handleAddCustom = () => {
     const trimmed = customKeyword.trim();
+
     if (trimmed && !selectedKeywords.includes(trimmed)) {
       setSelectedKeywords((prev) => [...prev, trimmed]);
-      setCustomKeyword("");
-      setTimeout(() => moreInputRef.current?.focus(), 50);
+
+      // ✅ NEW: immediately show custom keyword as a chip (before "More")
+      setSuggestedKeywords((prev) => insertKeywordBeforeMore(prev, trimmed));
     }
+
+    setCustomKeyword("");
+    setTimeout(() => moreInputRef.current?.focus(), 50);
   };
 
   const handleKeyDown = (e) => {
